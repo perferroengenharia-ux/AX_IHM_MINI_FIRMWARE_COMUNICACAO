@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-1.0.1"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-1.0.2"
 
 static const char *TAG = "ihm_console";
 
@@ -459,6 +459,181 @@ static int command_outputs(int argc, char **argv)
     return 0;
 }
 
+static bool find_parameter(const char *text, ihm_parameter_id_t *id)
+{
+    char normalized[4];
+
+    if ((text == NULL) || (strlen(text) != 3U))
+    {
+        return false;
+    }
+    normalized[0] = 'P';
+    normalized[1] = text[1];
+    normalized[2] = text[2];
+    normalized[3] = '\0';
+    return ((text[0] == 'P') || (text[0] == 'p')) &&
+           ihm_parameters_find(normalized, id);
+}
+
+static bool parameter_is_active(ihm_parameter_id_t id)
+{
+    return (id == IHM_PARAM_P81) ||
+           (id == IHM_PARAM_P82) ||
+           (id == IHM_PARAM_P85) ||
+           (id == IHM_PARAM_P91);
+}
+
+static void print_parameter(const ihm_parameter_blob_t *parameters,
+                            ihm_parameter_id_t id)
+{
+    printf("OK %s raw=%u scope=%s persistent=yes sync=%s\n",
+           ihm_parameters_code(id),
+           parameters->values[id],
+           parameter_is_active(id) ? "active" : "legacy_inert",
+           ihm_command_service_is_sync_pending() ? "pending" : "done");
+}
+
+static void print_parameter_help(void)
+{
+    printf("OK use=\"param list | param get <Pxx> | "
+           "param unlock | param set <Pxx> <raw> | param lock | "
+           "param save | param defaults 101 confirm\"\n");
+    printf("ACTIVE P81=0..1 swing; P82=0..2 pump; "
+           "P85=0..2 level_sensor; P91=0..100 loss_tolerance_percent\n");
+}
+
+static int command_param(int argc, char **argv)
+{
+    ihm_parameter_blob_t parameters;
+    ihm_parameter_id_t id;
+    ihm_command_status_t command_status;
+    const char *action;
+
+    if (argc < 2)
+    {
+        print_parameter_help();
+        return 1;
+    }
+    action = argv[1];
+
+    if ((strcmp(action, "help") == 0) && (argc == 2))
+    {
+        print_parameter_help();
+        return 0;
+    }
+    if ((strcmp(action, "list") == 0) && (argc == 2))
+    {
+        uint16_t index;
+
+        ihm_command_service_get_parameters(&parameters);
+        printf("OK edit=%s sync=%s\n",
+               ihm_command_service_is_edit_unlocked() ?
+                   "unlocked" : "locked",
+               ihm_command_service_is_sync_pending() ?
+                   "pending" : "done");
+        for (index = 0U; index < (uint16_t)IHM_PARAM_COUNT; index++)
+        {
+            printf("%s raw=%u scope=%s\n",
+                   ihm_parameters_code((ihm_parameter_id_t)index),
+                   parameters.values[index],
+                   parameter_is_active((ihm_parameter_id_t)index) ?
+                       "active" : "legacy_inert");
+        }
+        return 0;
+    }
+    if ((strcmp(action, "get") == 0) && (argc == 3) &&
+        find_parameter(argv[2], &id))
+    {
+        ihm_command_service_get_parameters(&parameters);
+        print_parameter(&parameters, id);
+        return 0;
+    }
+    if ((strcmp(action, "unlock") == 0) && (argc == 2))
+    {
+        if (!ihm_command_service_is_edit_unlocked())
+        {
+            command_status = ihm_command_service_p00(7U);
+            if (command_status != IHM_COMMAND_OK)
+            {
+                printf("ERR %s\n",
+                       ihm_command_status_to_string(command_status));
+                return 1;
+            }
+        }
+        printf("OK edit=unlocked sync=paused_until_lock\n");
+        return 0;
+    }
+    if ((strcmp(action, "lock") == 0) && (argc == 2))
+    {
+        if (ihm_command_service_is_edit_unlocked())
+        {
+            command_status = ihm_command_service_p00(7U);
+            if (command_status != IHM_COMMAND_OK)
+            {
+                printf("ERR %s\n",
+                       ihm_command_status_to_string(command_status));
+                return 1;
+            }
+        }
+        printf("OK edit=locked sync=%s\n",
+               ihm_command_service_is_sync_pending() ?
+                   "requested" : "unchanged");
+        return 0;
+    }
+    if ((strcmp(action, "set") == 0) && (argc == 4) &&
+        find_parameter(argv[2], &id))
+    {
+        uint16_t value;
+
+        if (((strcmp(argv[3], "off") == 0) ||
+             (strcmp(argv[3], "OFF") == 0)))
+        {
+            value = 0U;
+        }
+        else if (!parse_u16(argv[3], &value))
+        {
+            printf("ERR INVALID_ARGUMENT value=%s\n", argv[3]);
+            return 1;
+        }
+        command_status = ihm_command_service_set_parameter(id, value);
+        if (command_status != IHM_COMMAND_OK)
+        {
+            printf("ERR %s parameter=%s\n",
+                   ihm_command_status_to_string(command_status),
+                   ihm_parameters_code(id));
+            return 1;
+        }
+        ihm_command_service_get_parameters(&parameters);
+        print_parameter(&parameters, id);
+        return 0;
+    }
+    if ((strcmp(action, "save") == 0) && (argc == 2))
+    {
+        command_status = ihm_command_service_save();
+        printf("%s save=%s\n",
+               command_status == IHM_COMMAND_OK ? "OK" : "ERR",
+               ihm_command_status_to_string(command_status));
+        return command_status == IHM_COMMAND_OK ? 0 : 1;
+    }
+    if ((strcmp(action, "defaults") == 0) && (argc == 4) &&
+        (strcmp(argv[2], "101") == 0) &&
+        (strcmp(argv[3], "confirm") == 0))
+    {
+        command_status = ihm_command_service_p00(101U);
+        if (command_status != IHM_COMMAND_OK)
+        {
+            printf("ERR defaults=%s\n",
+                   ihm_command_status_to_string(command_status));
+            return 1;
+        }
+        printf("OK defaults=restored edit=locked sync=requested\n");
+        return 0;
+    }
+
+    print_parameter_help();
+    return 1;
+}
+
 static int command_sync(int argc, char **argv)
 {
     app_sync_snapshot_t sync;
@@ -526,6 +701,8 @@ static esp_err_t register_all_commands(void)
     REGISTER("comm", "comm ping|stats|clear-stats", command_comm);
     REGISTER("mb", "mb read <addr> <qtd> | mb write <addr> <valor>",
              command_mb);
+    REGISTER("param", "param list|get|set|unlock|lock|save|defaults",
+             command_param);
     REGISTER("sync", "sync run|status", command_sync);
     REGISTER("error", "error clear-e08", command_error);
     REGISTER("bomba", "bomba on|off|status", command_peripheral);

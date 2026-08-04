@@ -378,6 +378,17 @@ static void test_parameter_blob_and_local_p00(void)
     CHECK(parameters.values[IHM_PARAM_P43] == 600U);
     CHECK(parameters.values[IHM_PARAM_P91] == 47U);
     CHECK(ihm_command_service_is_sync_pending());
+
+    /* P91 e local; perifericos exigem uma nova sincronizacao. */
+    ihm_command_service_set_sync_result(true);
+    CHECK(!ihm_command_service_is_sync_pending());
+    CHECK(ihm_command_service_p00(7U) == IHM_COMMAND_OK);
+    CHECK(ihm_command_service_set_parameter(IHM_PARAM_P91, 25U) ==
+          IHM_COMMAND_OK);
+    CHECK(!ihm_command_service_is_sync_pending());
+    CHECK(ihm_command_service_set_parameter(IHM_PARAM_P82, 2U) ==
+          IHM_COMMAND_OK);
+    CHECK(ihm_command_service_is_sync_pending());
 }
 
 static void test_actuator_diagnostic_contract(void)

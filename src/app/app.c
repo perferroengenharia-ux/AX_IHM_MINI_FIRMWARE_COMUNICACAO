@@ -672,6 +672,7 @@ static void communication_task(void *context)
 
         now_ms = uptime_ms();
         if (ihm_command_service_is_sync_pending() &&
+            !ihm_command_service_is_edit_unlocked() &&
             (now_ms >= next_sync_attempt_ms))
         {
             (void)run_parameter_handshake();

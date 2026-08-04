@@ -94,8 +94,11 @@ ihm_command_status_t ihm_command_service_set_parameter(ihm_parameter_id_t id,
 
     portENTER_CRITICAL(&s_lock);
     s_parameters = candidate;
-    s_sync_pending = true;
-    s_handshake_complete = false;
+    if (id != IHM_PARAM_P91)
+    {
+        s_sync_pending = true;
+        s_handshake_complete = false;
+    }
     portEXIT_CRITICAL(&s_lock);
     if (id == IHM_PARAM_P91)
     {

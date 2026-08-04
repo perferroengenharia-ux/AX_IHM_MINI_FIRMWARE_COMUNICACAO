@@ -29,6 +29,20 @@ pio run
 
 Use `help` para listar todos os comandos. Os principais são `status`, `comm ping`, `bomba on|off|status`, `swing on|off|status`, `sensor status` e `outputs status`.
 
+Para editar parâmetros sem gerar um handshake por alteração:
+
+```text
+param unlock
+param set P81 1
+param set P82 1
+param set P85 2
+param lock
+sync status
+```
+
+As alterações são validadas e persistidas no NVS. A sincronização com o STM32
+fica pausada durante a edição e é solicitada uma única vez em `param lock`.
+
 O comando `bomba status` informa também o motivo de bloqueio. Se `bomba on`
 for recusado pelo STM32, o terminal mostra `PUMP_BLOCKED` com a causa exata,
 como `level_not_stable` ou `water_shortage`.
