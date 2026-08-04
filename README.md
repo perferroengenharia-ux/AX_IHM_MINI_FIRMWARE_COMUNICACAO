@@ -1,59 +1,65 @@
 # AX_IHM_MINI_FIRMWARE_COMUNICACAO
 
-Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO`. Ele conversa somente com o STM32 que anuncia protocolo `0xC001` e dispositivo `0xF301`.
+Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-MOTOR`. Ele aceita somente STM32 com protocolo `0xC002` e dispositivo `0xF301`.
 
 ## Funções
 
-- inicializa RS485 em UART1, GPIO37 TX, GPIO36 RX e GPIO38 RTS/DE;
-- valida a identidade do STM32 e sincroniza parâmetros;
-- envia heartbeat e trata E08 por perda de comunicação;
-- consulta estado da bomba, swing e sensor de nível;
-- envia comandos digitais de bomba e swing;
-- oferece terminal USB/UART em 115200 bit/s.
+- RS485 em GPIO37 TX, GPIO36 RX e GPIO38 RTS/DE, 9600 bit/s, 8E1;
+- identidade, sincronização de parâmetros, heartbeat e recuperação de E08;
+- comandos de motor, frequência, sentido, rampa, torque e portadora;
+- comandos de bomba, swing e diagnóstico do sensor de nível;
+- rotinas de molhagem, secagem e exaustão executadas no STM32;
+- parâmetros persistidos em NVS;
+- terminal USB/UART a 115200 bit/s.
 
-Não há leitura de ADC, tensão, corrente ou temperatura, nem comandos de motor/PWM. Campos analógicos legados recebidos do STM32 são ignorados e permanecem zero.
+Não há aquisição de tensão, corrente ou temperatura. O único erro tratado é E08. MOTOR/PA11 é apenas monitorado e BYPASS/PA15 permanece fixo em high.
 
-## Compilar
+## Compilar e testar
 
 ```powershell
 pio run
-```
-
-## Testes de protocolo
-
-```powershell
 .\test\host\run_tests.ps1
 ```
 
-## Terminal
+## Uso rápido
 
-Use `help` para listar todos os comandos. Os principais são `status`, `comm ping`, `bomba on|off|status`, `swing on|off|status`, `sensor status` e `outputs status`.
+```text
+motor freq 10
+motor start
+motor up 5
+motor down 2
+motor status
+pwm status
+motor stop
 
-Para editar parâmetros sem gerar um handshake por alteração:
+pwm freq 20
+ramp accel 15
+ramp decel 10
+torque gain 4
+```
+
+Configuração e execução da secagem:
 
 ```text
 param unlock
-param set P81 1
-param set P82 1
-param set P85 2
+param set P32 3000
+param set P33 1
+param set P31 3
+param set P86 1
 param lock
-sync status
+routine dry start
+routine status
 ```
 
-As alterações são validadas e persistidas no NVS. A sincronização com o STM32
-fica pausada durante a edição. `param lock` só retorna sucesso depois de o
-handshake terminar, evitando comandos de bomba durante a janela de atualização.
+Molhagem:
 
-Se a bomba encontrar o bloqueio transitório `parameters_not_synced`, o terminal
-solicita uma sincronização, aguarda a conclusão e tenta `PUMP_ON` novamente uma
-única vez. Os demais intertravamentos continuam sendo respeitados.
+```text
+param unlock
+param set P30 2
+param lock
+routine wet start
+routine status
+routine stop
+```
 
-O comando `bomba status` informa também o motivo de bloqueio. Se `bomba on`
-for recusado pelo STM32, o terminal mostra `PUMP_BLOCKED` com a causa exata,
-como `level_not_stable` ou `water_shortage`.
-
-Para a bomba ser liberada, P82 deve estar habilitado e o nível precisa ficar
-estável por 5 segundos. Em P85=1, PF0 baixo significa água disponível; em
-P85=2, PF0 alto significa água disponível. Use `sensor status` para conferir.
-
-Consulte `docs/protocol_contract.md` para o mapa de registradores.
+Use `help` para a lista completa. O contrato detalhado está em `../docs/protocol_contract.md` no projeto STM32.

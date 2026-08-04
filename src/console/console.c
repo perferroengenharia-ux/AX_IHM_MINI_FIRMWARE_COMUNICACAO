@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-1.0.3"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-MOTOR-1.1.0"
 #define PARAMETER_SYNC_WAIT_MS 6000U
 
 static const char *TAG = "ihm_console";
@@ -54,6 +54,26 @@ static bool parse_u16(const char *text, uint16_t *value)
         return false;
     }
     *value = (uint16_t)parsed;
+    return true;
+}
+
+static bool parse_hz_centihz(const char *text, uint16_t *value)
+{
+    char *end = NULL;
+    double parsed;
+
+    if ((text == NULL) || (value == NULL))
+    {
+        return false;
+    }
+    errno = 0;
+    parsed = strtod(text, &end);
+    if ((errno != 0) || (end == text) || (*end != '\0') ||
+        (parsed < 0.01) || (parsed > 90.0))
+    {
+        return false;
+    }
+    *value = (uint16_t)(parsed * 100.0 + 0.5);
     return true;
 }
 
@@ -226,8 +246,8 @@ static int command_version(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    printf("OK firmware=%s protocol=0x%04X scope=communication-peripherals "
-           "adc=off motor=off pwm=off\n",
+    printf("OK firmware=%s protocol=0x%04X scope=communication-motor-peripherals "
+           "adc=off motor_monitor=input bypass=fixed_high pwm=spwm_3phase\n",
            IHM_FIRMWARE_VERSION, REG_PROTOCOL_VERSION_EXPECTED);
     return 0;
 }
@@ -246,7 +266,8 @@ static int command_status(int argc, char **argv)
     parameter_cache_get_snapshot(&cache);
     peripheral = cache.runtime_valid ? cache.peripheral_status : 0U;
     printf("OK comm=%s sync=%s handshake=%s e08=%s cache=%s "
-           "peripheral=0x%04X level_valid=%s water=%s shortage=%s "
+           "system=%s motor=%s routine=%s peripheral=0x%04X "
+           "level_valid=%s water=%s shortage=%s "
            "tx=%" PRIu32 " valid=%" PRIu32 " timeout=%" PRIu32
            " crc=%" PRIu32 "\n",
            comm_diagnostics_state_to_string(diag.state),
@@ -254,6 +275,14 @@ static int command_status(int argc, char **argv)
            ihm_command_service_is_handshake_complete() ? "yes" : "no",
            ihm_command_service_is_e08_active() ? "active" : "inactive",
            parameter_cache_is_fresh() ? "fresh" : "stale",
+           (cache.status_word & REG_STATUS_SYSTEM_ENABLED_MASK) != 0U ?
+               "on" : "off",
+           (cache.status_word & REG_STATUS_MOTOR_RUNNING_MASK) != 0U ?
+               "running" :
+               ((cache.status_word & REG_STATUS_MOTOR_READY_MASK) != 0U ?
+                "ready" : "stopped"),
+           (cache.status_word & REG_STATUS_CYCLE_ACTIVE_MASK) != 0U ?
+               "active" : "idle",
            peripheral,
            (peripheral & REG_PERIPHERAL_LEVEL_VALID_MASK) != 0U ?
                "yes" : "no",
@@ -526,14 +555,404 @@ static int command_outputs(int argc, char **argv)
     bits = result.values[0];
     printf("OK pump_requested=%s pump_allowed=%s pump_active=%s "
            "swing_requested=%s swing_allowed=%s swing_active=%s "
-           "motor=off pwm=off bypass=off\n",
+           "pwm=%s motor_monitor=%s bypass=%s\n",
            (bits & REG_PERIPHERAL_PUMP_REQUEST_MASK) != 0U ? "on" : "off",
            (bits & REG_PERIPHERAL_PUMP_ALLOWED_MASK) != 0U ? "yes" : "no",
            (bits & REG_PERIPHERAL_PUMP_ACTIVE_MASK) != 0U ? "on" : "off",
            (bits & REG_PERIPHERAL_SWING_REQUEST_MASK) != 0U ? "on" : "off",
            (bits & REG_PERIPHERAL_SWING_ALLOWED_MASK) != 0U ? "yes" : "no",
-           (bits & REG_PERIPHERAL_SWING_ACTIVE_MASK) != 0U ? "on" : "off");
+            (bits & REG_PERIPHERAL_SWING_ACTIVE_MASK) != 0U ? "on" : "off",
+            (bits & REG_PERIPHERAL_MOTOR_ACTIVE_MASK) != 0U ? "on" : "off",
+            (bits & REG_PERIPHERAL_MOTOR_PIN_HIGH_MASK) != 0U ? "high" : "low",
+            (bits & REG_PERIPHERAL_BYPASS_PIN_HIGH_MASK) != 0U ? "high" : "low");
     return 0;
+}
+
+static bool write_control(uint16_t command)
+{
+    app_comm_result_t result;
+
+    return direct_write(REG_CONTROL_COMMAND, command, &result) &&
+           result_ok(&result);
+}
+
+static const char *motor_state_to_string(uint16_t state)
+{
+    switch (state)
+    {
+        case REG_MOTOR_STATE_DISABLED: return "disabled";
+        case REG_MOTOR_STATE_READY: return "ready";
+        case REG_MOTOR_STATE_STARTING: return "starting";
+        case REG_MOTOR_STATE_RUNNING: return "running";
+        case REG_MOTOR_STATE_STOPPING: return "stopping";
+        case REG_MOTOR_STATE_FAULT: return "fault_e08";
+        default: return "unknown";
+    }
+}
+
+static const char *cycle_state_to_string(uint16_t state)
+{
+    switch (state)
+    {
+        case REG_CYCLE_IDLE: return "idle";
+        case REG_CYCLE_WETTING: return "wetting";
+        case REG_CYCLE_DRYING: return "drying";
+        case REG_CYCLE_DRY_STOPPING: return "dry_stopping";
+        case REG_CYCLE_EXHAUST: return "exhaust";
+        default: return "unknown";
+    }
+}
+
+static const char *cycle_block_to_string(uint16_t reason)
+{
+    switch (reason)
+    {
+        case 0U: return "none";
+        case 1U: return "parameters_not_synced";
+        case 2U: return "communication_e08";
+        case 3U: return "routine_already_active";
+        case 4U: return "pump_blocked";
+        case 5U: return "swing_blocked";
+        case 6U: return "drying_disabled_p32_zero";
+        case 7U: return "motor_not_ready";
+        default: return "unknown";
+    }
+}
+
+static int print_motor_status(bool pwm_only)
+{
+    app_comm_result_t result;
+    uint16_t *motor;
+    uint16_t flags;
+
+    if (!direct_read(REG_MOTOR_STATE, REG_MOTOR_DIAGNOSTIC_COUNT, &result) ||
+        !result_ok(&result))
+    {
+        return 1;
+    }
+    motor = result.values;
+    flags = motor[REG_MOTOR_PWM_FLAGS - REG_MOTOR_STATE];
+    if (pwm_only)
+    {
+        printf("OK pwm=%s timer=%s complementary=%s mode=%s carrier=%uHz "
+               "ARR=%u PSC=%u deadtime_ns=%u modulation=%.1f%% "
+               "motor_monitor=%s phase_step=0x%04X%04X\n",
+               (flags & REG_MOTOR_PWM_MOE_ENABLED) != 0U ? "on" : "off",
+               (flags & REG_MOTOR_PWM_TIMER_RUNNING) != 0U ?
+                   "running" : "stopped",
+               (flags & REG_MOTOR_PWM_COMPLEMENTARY) != 0U ? "yes" : "no",
+               (flags & REG_MOTOR_PWM_EDGE_ALIGNED) != 0U ? "edge" : "center",
+               motor[REG_MOTOR_CARRIER_HZ - REG_MOTOR_STATE],
+               motor[REG_MOTOR_ARR - REG_MOTOR_STATE],
+               motor[REG_MOTOR_PSC - REG_MOTOR_STATE],
+               motor[REG_MOTOR_DEADTIME_NS - REG_MOTOR_STATE],
+               (double)motor[REG_MOTOR_MODULATION_PERMILLE -
+                             REG_MOTOR_STATE] / 10.0,
+               motor[REG_MOTOR_MONITOR_LEVEL - REG_MOTOR_STATE] != 0U ?
+                   "high" : "low",
+               motor[REG_MOTOR_PHASE_STEP_HIGH - REG_MOTOR_STATE],
+               motor[REG_MOTOR_PHASE_STEP_LOW - REG_MOTOR_STATE]);
+        return 0;
+    }
+    printf("OK motor_state=%s target=%.2fHz actual=%.2fHz direction=%s "
+           "system=%s pwm=%s carrier=%uHz modulation=%.1f%% "
+           "motor_monitor=%s blocks=0x%04X[comm=%u params=%u system=%u "
+           "direction=%u target=%u e08=%u]\n",
+           motor_state_to_string(motor[0]),
+           (double)motor[REG_MOTOR_TARGET_FREQUENCY - REG_MOTOR_STATE] / 100.0,
+           (double)motor[REG_MOTOR_ACTUAL_FREQUENCY - REG_MOTOR_STATE] / 100.0,
+           motor[REG_MOTOR_DIRECTION - REG_MOTOR_STATE] != 0U ?
+               "reverse" : "normal",
+           motor[REG_MOTOR_SYSTEM_ENABLED - REG_MOTOR_STATE] != 0U ?
+               "on" : "off",
+           (flags & REG_MOTOR_PWM_MOE_ENABLED) != 0U ? "on" : "off",
+           motor[REG_MOTOR_CARRIER_HZ - REG_MOTOR_STATE],
+           (double)motor[REG_MOTOR_MODULATION_PERMILLE -
+                         REG_MOTOR_STATE] / 10.0,
+           motor[REG_MOTOR_MONITOR_LEVEL - REG_MOTOR_STATE] != 0U ?
+               "high" : "low",
+           motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE],
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+            REG_MOTOR_BLOCK_COMMUNICATION) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+            REG_MOTOR_BLOCK_PARAMETERS) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+            REG_MOTOR_BLOCK_SYSTEM_OFF) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+            REG_MOTOR_BLOCK_DIRECTION) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+            REG_MOTOR_BLOCK_TARGET_FREQUENCY) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+            REG_MOTOR_BLOCK_E08) != 0U);
+    return 0;
+}
+
+static bool set_motor_frequency(uint16_t centihz)
+{
+    app_comm_result_t result;
+
+    if (!direct_write(REG_MOTOR_TARGET_COMMAND, centihz, &result) ||
+        !result_ok(&result))
+    {
+        return false;
+    }
+    printf("OK motor_target=%.2fHz\n", (double)centihz / 100.0);
+    return true;
+}
+
+static int command_system(int argc, char **argv)
+{
+    if (argc != 2)
+    {
+        printf("ERR use=\"system on|off|status\"\n");
+        return 1;
+    }
+    if (strcmp(argv[1], "status") == 0)
+    {
+        return print_motor_status(false);
+    }
+    if (strcmp(argv[1], "on") == 0)
+    {
+        if (!write_control(REG_CONTROL_SYSTEM_ON)) { return 1; }
+        printf("OK system=on\n");
+        return 0;
+    }
+    if (strcmp(argv[1], "off") == 0)
+    {
+        if (!write_control(REG_CONTROL_SYSTEM_OFF)) { return 1; }
+        printf("OK system=off motor=stopping_in_ramp\n");
+        return 0;
+    }
+    printf("ERR use=\"system on|off|status\"\n");
+    return 1;
+}
+
+static int command_motor(int argc, char **argv)
+{
+    uint16_t value;
+    app_comm_result_t result;
+
+    if ((argc == 2) && (strcmp(argv[1], "status") == 0))
+    {
+        return print_motor_status(false);
+    }
+    if ((argc == 2) && (strcmp(argv[1], "start") == 0))
+    {
+        if (!write_control(REG_CONTROL_SYSTEM_ON) ||
+            !write_control(REG_CONTROL_MOTOR_START))
+        {
+            printf("ERR motor_start=blocked use=\"motor status\"\n");
+            return 1;
+        }
+        printf("OK motor=start ramp=P10\n");
+        return 0;
+    }
+    if ((argc == 2) && (strcmp(argv[1], "stop") == 0))
+    {
+        if (!write_control(REG_CONTROL_MOTOR_STOP)) { return 1; }
+        printf("OK motor=stop ramp=P11\n");
+        return 0;
+    }
+    if ((argc == 3) && (strcmp(argv[1], "freq") == 0) &&
+        parse_hz_centihz(argv[2], &value))
+    {
+        return set_motor_frequency(value) ? 0 : 1;
+    }
+    if ((argc >= 2) && (argc <= 3) &&
+        ((strcmp(argv[1], "up") == 0) ||
+         (strcmp(argv[1], "down") == 0)))
+    {
+        uint16_t increment = 100U;
+        int32_t candidate;
+        ihm_parameter_blob_t parameters;
+
+        if ((argc == 3) && !parse_hz_centihz(argv[2], &increment))
+        {
+            printf("ERR increment=0.01..90.00Hz\n");
+            return 1;
+        }
+        if (!direct_read(REG_MOTOR_TARGET_FREQUENCY, 1U, &result) ||
+            !result_ok(&result))
+        {
+            return 1;
+        }
+        ihm_command_service_get_parameters(&parameters);
+        candidate = (int32_t)result.values[0] +
+                    (strcmp(argv[1], "up") == 0 ?
+                     (int32_t)increment : -(int32_t)increment);
+        if (candidate < (int32_t)parameters.values[IHM_PARAM_P20])
+        { candidate = parameters.values[IHM_PARAM_P20]; }
+        if (candidate > (int32_t)parameters.values[IHM_PARAM_P21])
+        { candidate = parameters.values[IHM_PARAM_P21]; }
+        return set_motor_frequency((uint16_t)candidate) ? 0 : 1;
+    }
+    if ((argc == 3) && (strcmp(argv[1], "dir") == 0))
+    {
+        uint16_t command;
+        if (strcmp(argv[2], "normal") == 0)
+        { command = REG_CONTROL_MOTOR_DIR_NORMAL; }
+        else if ((strcmp(argv[2], "reverse") == 0) ||
+                 (strcmp(argv[2], "reverso") == 0))
+        { command = REG_CONTROL_MOTOR_DIR_REVERSE; }
+        else
+        {
+            printf("ERR use=\"motor dir normal|reverse\"\n");
+            return 1;
+        }
+        if (!write_control(command)) { return 1; }
+        printf("OK motor_direction=%s\n", argv[2]);
+        return 0;
+    }
+    printf("ERR use=\"motor start|stop|status|freq <Hz>|up [Hz]|"
+           "down [Hz]|dir normal|reverse\"\n");
+    return 1;
+}
+
+static bool update_parameter_and_sync(ihm_parameter_id_t id, uint16_t value)
+{
+    ihm_command_status_t status;
+    app_comm_result_t remote;
+
+    if (!direct_read(REG_STATUS_WORD, 1U, &remote) || !result_ok(&remote))
+    {
+        return false;
+    }
+    if ((remote.values[0] &
+         (REG_STATUS_MOTOR_RUNNING_MASK | REG_STATUS_CYCLE_ACTIVE_MASK)) != 0U)
+    {
+        printf("ERR parameter_update_requires_motor_and_routine_idle\n");
+        return false;
+    }
+
+    if (ihm_command_service_is_edit_unlocked())
+    {
+        printf("ERR parameter_edit_unlocked action=param_lock\n");
+        return false;
+    }
+    status = ihm_command_service_p00(7U);
+    if (status == IHM_COMMAND_OK)
+    {
+        status = ihm_command_service_set_parameter(id, value);
+    }
+    if (ihm_command_service_is_edit_unlocked())
+    {
+        (void)ihm_command_service_p00(7U);
+    }
+    if (status != IHM_COMMAND_OK)
+    {
+        printf("ERR %s parameter=%s\n",
+               ihm_command_status_to_string(status), ihm_parameters_code(id));
+        return false;
+    }
+    app_request_parameter_sync();
+    if (!wait_for_parameter_sync())
+    {
+        print_sync_failure();
+        return false;
+    }
+    printf("OK %s=%u sync=completed\n", ihm_parameters_code(id), value);
+    return true;
+}
+
+static int command_pwm(int argc, char **argv)
+{
+    uint16_t carrier;
+
+    if ((argc == 2) && (strcmp(argv[1], "status") == 0))
+    {
+        return print_motor_status(true);
+    }
+    if ((argc == 3) && (strcmp(argv[1], "freq") == 0) &&
+        parse_u16(argv[2], &carrier) &&
+        ((carrier == 5U) || (carrier == 10U) || (carrier == 20U)))
+    {
+        return update_parameter_and_sync(IHM_PARAM_P42, carrier) ? 0 : 1;
+    }
+    printf("ERR use=\"pwm status|freq 5|10|20\"\n");
+    return 1;
+}
+
+static int command_ramp(int argc, char **argv)
+{
+    uint16_t seconds;
+    ihm_parameter_id_t id;
+
+    if ((argc != 3) || !parse_u16(argv[2], &seconds) ||
+        (seconds < 5U) || (seconds > 60U))
+    {
+        printf("ERR use=\"ramp accel|decel <5..60 seconds>\"\n");
+        return 1;
+    }
+    if (strcmp(argv[1], "accel") == 0) { id = IHM_PARAM_P10; }
+    else if (strcmp(argv[1], "decel") == 0) { id = IHM_PARAM_P11; }
+    else
+    {
+        printf("ERR use=\"ramp accel|decel <5..60 seconds>\"\n");
+        return 1;
+    }
+    return update_parameter_and_sync(id, seconds) ? 0 : 1;
+}
+
+static int command_torque(int argc, char **argv)
+{
+    uint16_t gain;
+
+    if ((argc != 3) || (strcmp(argv[1], "gain") != 0) ||
+        !parse_u16(argv[2], &gain) || (gain > 9U))
+    {
+        printf("ERR use=\"torque gain <0..9 percent>\"\n");
+        return 1;
+    }
+    return update_parameter_and_sync(IHM_PARAM_P35, gain) ? 0 : 1;
+}
+
+static int command_routine(int argc, char **argv)
+{
+    app_comm_result_t result;
+    uint16_t command;
+
+    if ((argc == 2) && (strcmp(argv[1], "status") == 0))
+    {
+        if (!direct_read(REG_CYCLE_STATE, REG_CYCLE_DIAGNOSTIC_COUNT, &result) ||
+            !result_ok(&result))
+        {
+            return 1;
+        }
+        printf("OK routine=%s remaining_s=%u block=%s(%u) flags=0x%04X\n",
+               cycle_state_to_string(result.values[0]), result.values[1],
+               cycle_block_to_string(result.values[2]), result.values[2],
+               result.values[3]);
+        return 0;
+    }
+    if ((argc == 3) && (strcmp(argv[2], "start") == 0))
+    {
+        if ((strcmp(argv[1], "wet") == 0) ||
+            (strcmp(argv[1], "molhagem") == 0))
+        { command = REG_CONTROL_WET_START; }
+        else if ((strcmp(argv[1], "dry") == 0) ||
+                 (strcmp(argv[1], "secagem") == 0))
+        { command = REG_CONTROL_DRY_START; }
+        else
+        {
+            printf("ERR use=\"routine wet|dry start | routine stop|status\"\n");
+            return 1;
+        }
+        if (!write_control(command))
+        {
+            (void)command_routine(2, (char *[]){argv[0], "status"});
+            return 1;
+        }
+        printf("OK routine=%s started\n", argv[1]);
+        return 0;
+    }
+    if ((argc == 2) && (strcmp(argv[1], "stop") == 0))
+    {
+        if (!write_control(REG_CONTROL_CYCLE_STOP)) { return 1; }
+        printf("OK routine=stopped\n");
+        return 0;
+    }
+    printf("ERR use=\"routine wet|dry start | routine stop|status\"\n");
+    return 1;
 }
 
 static bool find_parameter(const char *text, ihm_parameter_id_t *id)
@@ -554,7 +973,19 @@ static bool find_parameter(const char *text, ihm_parameter_id_t *id)
 
 static bool parameter_is_active(ihm_parameter_id_t id)
 {
-    return (id == IHM_PARAM_P81) ||
+    return (id == IHM_PARAM_P10) ||
+           (id == IHM_PARAM_P11) ||
+           (id == IHM_PARAM_P20) ||
+           (id == IHM_PARAM_P21) ||
+           (id == IHM_PARAM_P30) ||
+           (id == IHM_PARAM_P31) ||
+           (id == IHM_PARAM_P32) ||
+           (id == IHM_PARAM_P33) ||
+           (id == IHM_PARAM_P35) ||
+           (id == IHM_PARAM_P41) ||
+           (id == IHM_PARAM_P42) ||
+           (id == IHM_PARAM_P51) ||
+           (id == IHM_PARAM_P81) ||
            (id == IHM_PARAM_P82) ||
            (id == IHM_PARAM_P85) ||
            (id == IHM_PARAM_P91);
@@ -575,8 +1006,10 @@ static void print_parameter_help(void)
     printf("OK use=\"param list | param get <Pxx> | "
            "param unlock | param set <Pxx> <raw> | param lock | "
            "param save | param defaults 101 confirm\"\n");
-    printf("ACTIVE P81=0..1 swing; P82=0..2 pump; "
-           "P85=0..2 level_sensor; P91=0..100 loss_tolerance_percent\n");
+    printf("ACTIVE motor: P10/P11 ramps_s; P20/P21/P32=0.01Hz; "
+           "P35=0..9%% torque; P41=50|60Hz; P42=5|10|20kHz; P51=dir\n");
+    printf("ACTIVE routines: P30/P31/P86=minutes; P33=dry_reverse; "
+           "P81 swing; P82 pump; P85 level_sensor; P91 comm_tolerance\n");
 }
 
 static int command_param(int argc, char **argv)
@@ -806,6 +1239,16 @@ static esp_err_t register_all_commands(void)
     REGISTER("swing", "swing on|off|status", command_peripheral);
     REGISTER("sensor", "sensor status", command_sensor);
     REGISTER("outputs", "outputs status", command_outputs);
+    REGISTER("system", "system on|off|status", command_system);
+    REGISTER("motor", "motor start|stop|status|freq|up|down|dir",
+             command_motor);
+    REGISTER("pwm", "pwm status|freq 5|10|20", command_pwm);
+    REGISTER("ramp", "ramp accel|decel <seconds>", command_ramp);
+    REGISTER("torque", "torque gain <0..9 percent>", command_torque);
+    REGISTER("routine", "routine wet|dry start | stop|status",
+             command_routine);
+    REGISTER("rotina", "rotina molhagem|secagem start | stop|status",
+             command_routine);
 #undef REGISTER
     return error;
 }

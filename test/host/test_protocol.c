@@ -88,7 +88,7 @@ static void test_crc_and_request_builders(void)
 static void test_response_validation(void)
 {
     uint8_t expected_response[] = {
-        0x01U, 0x03U, 0x02U, 0xC0U, 0x01U, 0x00U, 0x00U};
+        0x01U, 0x03U, 0x02U, 0xC0U, 0x02U, 0x00U, 0x00U};
     uint8_t frame[16];
     modbus_request_t request;
     modbus_response_t response;
@@ -171,7 +171,7 @@ static void test_communication_snapshot_contract(void)
            REG_TELEMETRY_SNAPSHOT_COUNT - 1U));
     CHECK(REG_DIAG_LEVEL_STABLE_SECONDS ==
           (REG_DIAG_LEVEL_ELECTRICAL + 2U));
-    CHECK(REG_PROTOCOL_VERSION_EXPECTED == 0xC001U);
+    CHECK(REG_PROTOCOL_VERSION_EXPECTED == 0xC002U);
 
     CHECK(modbus_master_prepare_read(&request,
                                      REG_TELEMETRY_SEQUENCE_BEGIN,
@@ -327,6 +327,8 @@ static void test_parameter_blob_and_local_p00(void)
     CHECK(parameters.values[IHM_PARAM_P30] == 1U);
     CHECK(parameters.values[IHM_PARAM_P31] == 3U);
     CHECK(parameters.values[IHM_PARAM_P42] == 10U);
+    CHECK(ihm_parameters_set(&parameters, IHM_PARAM_P42, 20U));
+    CHECK(!ihm_parameters_set(&parameters, IHM_PARAM_P42, 15U));
     CHECK(parameters.values[IHM_PARAM_P43] == 600U);
     CHECK(parameters.values[IHM_PARAM_P45] == 180U);
     CHECK(parameters.values[IHM_PARAM_P81] == 1U);

@@ -1,5 +1,5 @@
-# Contrato da IHM COMUNICACAO
+# Contrato da IHM COMUNICACAO-MOTOR
 
-A fonte canônica do contrato está em `../../docs/protocol_contract.md`.
+A fonte canônica está em `../../docs/protocol_contract.md`.
 
-Esta IHM exige versão Modbus `0xC001` e dispositivo `0xF301`. Ela consulta estado de comunicação, bomba, swing e sensor de nível. Não consulta diagnósticos ADC nem envia comandos de simulação, motor ou PWM.
+Esta IHM exige protocolo `0xC002` e dispositivo `0xF301`. Motor, PWM e rotinas são comandados pelo Modbus, mas executados localmente no STM32. Nenhum diagnóstico ADC é consultado e o único erro aceito é E08.

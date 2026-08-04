@@ -71,12 +71,34 @@ typedef enum
     REG_DIAG_SWING_BLOCK_REASON = 0x0143U,
     REG_DIAG_ELECTRICAL_FAULT_MASK = 0x0144U,
 
+    REG_MOTOR_STATE = 0x0150U,
+    REG_MOTOR_TARGET_FREQUENCY = 0x0151U,
+    REG_MOTOR_ACTUAL_FREQUENCY = 0x0152U,
+    REG_MOTOR_DIRECTION = 0x0153U,
+    REG_MOTOR_PWM_FLAGS = 0x0154U,
+    REG_MOTOR_CARRIER_HZ = 0x0155U,
+    REG_MOTOR_ARR = 0x0156U,
+    REG_MOTOR_PSC = 0x0157U,
+    REG_MOTOR_DEADTIME_NS = 0x0158U,
+    REG_MOTOR_START_BLOCKS = 0x0159U,
+    REG_MOTOR_FAULT_LATCHED = 0x015AU,
+    REG_MOTOR_MODULATION_PERMILLE = 0x015BU,
+    REG_MOTOR_PHASE_STEP_HIGH = 0x015CU,
+    REG_MOTOR_PHASE_STEP_LOW = 0x015DU,
+    REG_MOTOR_SYSTEM_ENABLED = 0x015EU,
+    REG_MOTOR_MONITOR_LEVEL = 0x015FU,
+    REG_CYCLE_STATE = 0x0160U,
+    REG_CYCLE_REMAINING_SECONDS = 0x0161U,
+    REG_CYCLE_BLOCK_REASON = 0x0162U,
+    REG_CYCLE_FLAGS = 0x0163U,
+
     REG_CONTROL_COMMAND = 0x0200U,
-    REG_FUTURE_COMMAND_FIRST = 0x0201U,
+    REG_MOTOR_TARGET_COMMAND = 0x0201U,
+    REG_FUTURE_COMMAND_FIRST = 0x0202U,
     REG_FUTURE_COMMAND_LAST = 0x02FFU
 } stm32_register_address_t;
 
-#define REG_PROTOCOL_VERSION_EXPECTED     ((uint16_t)0xC001U)
+#define REG_PROTOCOL_VERSION_EXPECTED     ((uint16_t)0xC002U)
 #define REG_DEVICE_ID_EXPECTED            ((uint16_t)0xF301U)
 #define REG_COMM_TEST_INITIAL_VALUE       ((uint16_t)0x1234U)
 
@@ -90,10 +112,24 @@ typedef enum
 #define REG_CONTROL_SWING_OFF               ((uint16_t)0x0011U)
 #define REG_CONTROL_PUMP_ON                 ((uint16_t)0x0012U)
 #define REG_CONTROL_PUMP_OFF                ((uint16_t)0x0013U)
+#define REG_CONTROL_SYSTEM_ON               ((uint16_t)0x0040U)
+#define REG_CONTROL_SYSTEM_OFF              ((uint16_t)0x0041U)
+#define REG_CONTROL_MOTOR_START             ((uint16_t)0x0042U)
+#define REG_CONTROL_MOTOR_STOP              ((uint16_t)0x0043U)
+#define REG_CONTROL_MOTOR_DIR_NORMAL        ((uint16_t)0x0044U)
+#define REG_CONTROL_MOTOR_DIR_REVERSE       ((uint16_t)0x0045U)
+#define REG_CONTROL_WET_START               ((uint16_t)0x0050U)
+#define REG_CONTROL_DRY_START               ((uint16_t)0x0051U)
+#define REG_CONTROL_CYCLE_STOP              ((uint16_t)0x0052U)
 #define REG_STATUS_COMM_READY_MASK         ((uint16_t)0x0001U)
 #define REG_STATUS_PARAMETERS_SYNCED_MASK  ((uint16_t)0x0002U)
 #define REG_STATUS_WRITE_UNLOCKED_MASK     ((uint16_t)0x0004U)
 #define REG_STATUS_E08_ACTIVE_MASK         ((uint16_t)0x0008U)
+#define REG_STATUS_SYSTEM_ENABLED_MASK     ((uint16_t)0x0010U)
+#define REG_STATUS_MOTOR_READY_MASK        ((uint16_t)0x0020U)
+#define REG_STATUS_MOTOR_RUNNING_MASK      ((uint16_t)0x0040U)
+#define REG_STATUS_MOTOR_FAULT_MASK        ((uint16_t)0x0080U)
+#define REG_STATUS_CYCLE_ACTIVE_MASK       ((uint16_t)0x0100U)
 
 #define REG_PERIPHERAL_SWING_REQUEST_MASK  ((uint16_t)0x0001U)
 #define REG_PERIPHERAL_PUMP_REQUEST_MASK   ((uint16_t)0x0002U)
@@ -106,7 +142,7 @@ typedef enum
 #define REG_PERIPHERAL_SWING_PIN_HIGH_MASK ((uint16_t)0x0100U)
 #define REG_PERIPHERAL_PUMP_PIN_HIGH_MASK  ((uint16_t)0x0200U)
 #define REG_PERIPHERAL_BYPASS_PIN_HIGH_MASK ((uint16_t)0x0400U)
-#define REG_PERIPHERAL_ELECTRICAL_FAULT_MASK ((uint16_t)0x0800U)
+#define REG_PERIPHERAL_MOTOR_PIN_HIGH_MASK ((uint16_t)0x0800U)
 #define REG_PERIPHERAL_LEVEL_ENABLED_MASK  ((uint16_t)0x1000U)
 #define REG_PERIPHERAL_WATER_AVAILABLE_MASK ((uint16_t)0x2000U)
 #define REG_PERIPHERAL_WATER_SHORTAGE_MASK ((uint16_t)0x4000U)
@@ -123,6 +159,32 @@ typedef enum
 #define REG_BLOCK_LEVEL_NOT_STABLE         ((uint16_t)5U)
 #define REG_BLOCK_WATER_SHORTAGE           ((uint16_t)6U)
 #define REG_BLOCK_P81_DISABLED             ((uint16_t)7U)
+
+#define REG_MOTOR_DIAGNOSTIC_COUNT         ((uint16_t)16U)
+#define REG_MOTOR_STATE_DISABLED           ((uint16_t)0U)
+#define REG_MOTOR_STATE_READY              ((uint16_t)1U)
+#define REG_MOTOR_STATE_STARTING           ((uint16_t)2U)
+#define REG_MOTOR_STATE_RUNNING            ((uint16_t)3U)
+#define REG_MOTOR_STATE_STOPPING           ((uint16_t)4U)
+#define REG_MOTOR_STATE_FAULT              ((uint16_t)5U)
+#define REG_MOTOR_PWM_TIMER_RUNNING        ((uint16_t)0x0001U)
+#define REG_MOTOR_PWM_MOE_ENABLED          ((uint16_t)0x0002U)
+#define REG_MOTOR_PWM_COMPLEMENTARY        ((uint16_t)0x0004U)
+#define REG_MOTOR_PWM_EDGE_ALIGNED         ((uint16_t)0x0008U)
+#define REG_MOTOR_PWM_MONITOR_HIGH         ((uint16_t)0x0010U)
+#define REG_MOTOR_BLOCK_COMMUNICATION      ((uint16_t)0x0001U)
+#define REG_MOTOR_BLOCK_PARAMETERS         ((uint16_t)0x0002U)
+#define REG_MOTOR_BLOCK_SYSTEM_OFF         ((uint16_t)0x0004U)
+#define REG_MOTOR_BLOCK_DIRECTION          ((uint16_t)0x0008U)
+#define REG_MOTOR_BLOCK_TARGET_FREQUENCY   ((uint16_t)0x0010U)
+#define REG_MOTOR_BLOCK_E08                ((uint16_t)0x0020U)
+
+#define REG_CYCLE_DIAGNOSTIC_COUNT         ((uint16_t)4U)
+#define REG_CYCLE_IDLE                     ((uint16_t)0U)
+#define REG_CYCLE_WETTING                  ((uint16_t)1U)
+#define REG_CYCLE_DRYING                   ((uint16_t)2U)
+#define REG_CYCLE_DRY_STOPPING             ((uint16_t)3U)
+#define REG_CYCLE_EXHAUST                  ((uint16_t)4U)
 
 #define REG_TELEMETRY_SNAPSHOT_COUNT       ((uint16_t)11U)
 #define REG_TELEMETRY_INDEX_SEQUENCE_BEGIN 0U
