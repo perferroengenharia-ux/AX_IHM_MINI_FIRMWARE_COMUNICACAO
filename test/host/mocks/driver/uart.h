@@ -1,0 +1,7 @@
+#ifndef TEST_MOCK_DRIVER_UART_H
+#define TEST_MOCK_DRIVER_UART_H
+
+#define UART_NUM_1 1
+#define UART_PIN_NO_CHANGE (-1)
+
+#endif /* TEST_MOCK_DRIVER_UART_H */

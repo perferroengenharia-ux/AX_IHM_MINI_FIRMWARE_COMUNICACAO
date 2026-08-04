@@ -1,0 +1,18 @@
+# ESP32-S3-WROOM-1-N8: flash física de 8 MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# Console de programação separado da UART1 usada pelo RS485.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# INFO no uso normal; quadros individuais permanecem em ESP_LOGD.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+
+# Terminal de desenvolvimento da IHM. A interface fisica pode ser trocada
+# junto com a console principal em menuconfig.
+CONFIG_IHM_TERMINAL_ENABLE=y
+CONFIG_IHM_TERMINAL_USB_SERIAL_JTAG=y

@@ -1,0 +1,28 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "app/app.c"
+        "comm/rs485_master.c"
+        "modbus/modbus_master.c"
+        "modbus/modbus_crc.c"
+        "services/parameter_cache.c"
+        "services/ihm_parameters.c"
+        "services/parameter_storage.c"
+        "services/ihm_command_service.c"
+        "diagnostics/comm_diagnostics.c"
+        "console/console.c"
+    INCLUDE_DIRS
+        "."
+        "app"
+        "comm"
+        "modbus"
+        "protocol"
+        "services"
+        "diagnostics"
+        "console"
+    REQUIRES
+        esp_driver_uart
+        esp_timer
+        console
+        nvs_flash
+)

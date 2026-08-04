@@ -1,0 +1,20 @@
+menu "IHM development terminal"
+
+config IHM_TERMINAL_ENABLE
+    bool "Enable IHM diagnostic terminal"
+    default y
+
+choice IHM_TERMINAL_INTERFACE
+    prompt "Terminal physical interface"
+    depends on IHM_TERMINAL_ENABLE
+    default IHM_TERMINAL_USB_SERIAL_JTAG
+
+config IHM_TERMINAL_USB_SERIAL_JTAG
+    bool "Native USB Serial/JTAG"
+
+config IHM_TERMINAL_UART0
+    bool "UART0 at 115200 8N1"
+
+endchoice
+
+endmenu
