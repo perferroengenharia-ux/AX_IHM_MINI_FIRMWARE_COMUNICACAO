@@ -195,7 +195,7 @@ static app_comm_result_t execute_modbus_request(
     app_comm_result_t result;
     uint16_t request_length = 0U;
     uint8_t attempt;
-    bool success = false;
+    bool link_alive = false;
 
     (void)memset(&result, 0, sizeof(result));
     result.status = APP_COMM_RESULT_INVALID_ARGUMENT;
@@ -266,6 +266,14 @@ static app_comm_result_t execute_modbus_request(
                                  app_comm_result_to_string(result.status));
             if (parse_status == MODBUS_PARSE_EXCEPTION)
             {
+                /*
+                 * Uma excecao Modbus com endereco e CRC validos prova que o
+                 * enlace respondeu. Ela e erro da operacao, nao perda RS485.
+                 */
+                comm_diagnostics_record_valid_response();
+                comm_diagnostics_record_latency(
+                    (uint32_t)(uptime_ms() - s_last_request_start_ms));
+                link_alive = true;
                 result.exception_code = response.exception_code;
                 break;
             }
@@ -283,7 +291,7 @@ static app_comm_result_t execute_modbus_request(
                          response.values,
                          (size_t)response.quantity * sizeof(uint16_t));
         }
-        success = true;
+        link_alive = true;
         console_trace_submit(request_frame, request_length,
                              response_frame, response_length,
                              (uint32_t)(uptime_ms() - attempt_start_ms),
@@ -297,7 +305,7 @@ static app_comm_result_t execute_modbus_request(
         break;
     }
 
-    comm_diagnostics_record_transaction(success, uptime_ms());
+    comm_diagnostics_record_transaction(link_alive, uptime_ms());
     if (comm_diagnostics_should_activate_e08())
     {
         ihm_command_service_set_e08_active(true);
@@ -700,20 +708,12 @@ static void communication_task(void *context)
         if (app_is_polling_enabled() && (now_ms >= next_poll_ms))
         {
             app_comm_result_t status_result;
-            app_comm_result_t level_result;
-            app_comm_result_t block_result;
 
             status_result = perform_read(REG_STATUS_WORD, 3U);
-            level_result = perform_read(REG_DIAG_LEVEL_ELECTRICAL, 3U);
-            block_result = perform_read(REG_DIAG_PUMP_BLOCK_REASON, 3U);
-            if ((status_result.status == APP_COMM_RESULT_OK) &&
-                (level_result.status == APP_COMM_RESULT_OK) &&
-                (block_result.status == APP_COMM_RESULT_OK))
+            if (status_result.status == APP_COMM_RESULT_OK)
             {
                 (void)parameter_cache_update_runtime_snapshot(
                     status_result.values,
-                    level_result.values,
-                    block_result.values,
                     uptime_ms());
             }
             else
@@ -748,12 +748,14 @@ static void communication_task(void *context)
             const comm_state_t current_state =
                 comm_diagnostics_get_state();
             if ((current_state == COMM_STATE_ONLINE) &&
-                ((previous_comm_state == COMM_STATE_DEGRADED) ||
-                 (previous_comm_state == COMM_STATE_OFFLINE)))
+                ((previous_comm_state == COMM_STATE_OFFLINE) ||
+                 ((previous_comm_state == COMM_STATE_DEGRADED) &&
+                  ihm_command_service_is_e08_active())))
             {
                 /*
-                 * Duas respostas validas ja foram exigidas pela maquina de
-                 * estados. Agora refazemos o handshake e limpamos E08.
+                 * Ressincroniza somente apos perda real ou E08 ativo. Uma
+                 * falha isolada seguida de recuperacao nao reinicia o
+                 * handshake nem ocupa a comunicacao desnecessariamente.
                  */
                 ihm_command_service_set_e08_active(true);
                 ihm_command_service_request_sync();

@@ -29,4 +29,12 @@ pio run
 
 Use `help` para listar todos os comandos. Os principais são `status`, `comm ping`, `bomba on|off|status`, `swing on|off|status`, `sensor status` e `outputs status`.
 
+O comando `bomba status` informa também o motivo de bloqueio. Se `bomba on`
+for recusado pelo STM32, o terminal mostra `PUMP_BLOCKED` com a causa exata,
+como `level_not_stable` ou `water_shortage`.
+
+Para a bomba ser liberada, P82 deve estar habilitado e o nível precisa ficar
+estável por 5 segundos. Em P85=1, PF0 baixo significa água disponível; em
+P85=2, PF0 alto significa água disponível. Use `sensor status` para conferir.
+
 Consulte `docs/protocol_contract.md` para o mapa de registradores.

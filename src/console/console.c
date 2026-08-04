@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-1.0.0"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-1.0.1"
 
 static const char *TAG = "ihm_console";
 
@@ -123,6 +123,58 @@ static bool result_ok(const app_comm_result_t *result)
     return false;
 }
 
+static const char *pump_block_reason_to_string(uint16_t reason)
+{
+    switch (reason)
+    {
+        case REG_BLOCK_NONE:
+            return "none";
+        case REG_BLOCK_PARAMETERS_NOT_SYNCED:
+            return "parameters_not_synced";
+        case REG_BLOCK_COMMUNICATION_ERROR:
+            return "communication_error";
+        case REG_BLOCK_P82_DISABLED:
+            return "p82_disabled";
+        case REG_BLOCK_LEVEL_SENSOR_DISABLED:
+            return "level_sensor_disabled";
+        case REG_BLOCK_LEVEL_NOT_STABLE:
+            return "level_not_stable";
+        case REG_BLOCK_WATER_SHORTAGE:
+            return "water_shortage";
+        default:
+            return "unknown";
+    }
+}
+
+static bool peripheral_command_ok(bool pump,
+                                  bool enabling,
+                                  const app_comm_result_t *result)
+{
+    if (result->status == APP_COMM_RESULT_OK)
+    {
+        return true;
+    }
+
+    if (pump && enabling &&
+        (result->status == APP_COMM_RESULT_EXCEPTION) &&
+        (result->exception_code == 0x03U))
+    {
+        app_comm_result_t block;
+
+        if (direct_read(REG_DIAG_PUMP_BLOCK_REASON, 1U, &block) &&
+            (block.status == APP_COMM_RESULT_OK))
+        {
+            printf("ERR PUMP_BLOCKED reason=%s code=%u\n",
+                   pump_block_reason_to_string(block.values[0]),
+                   block.values[0]);
+            return false;
+        }
+    }
+
+    (void)result_ok(result);
+    return false;
+}
+
 static int command_version(int argc, char **argv)
 {
     (void)argc;
@@ -138,14 +190,16 @@ static int command_status(int argc, char **argv)
     comm_diagnostics_snapshot_t diag;
     app_sync_snapshot_t sync;
     parameter_cache_snapshot_t cache;
+    uint16_t peripheral;
 
     (void)argc;
     (void)argv;
     comm_diagnostics_get_snapshot(&diag);
     app_get_sync_snapshot(&sync);
     parameter_cache_get_snapshot(&cache);
+    peripheral = cache.runtime_valid ? cache.peripheral_status : 0U;
     printf("OK comm=%s sync=%s handshake=%s e08=%s cache=%s "
-           "peripheral=0x%04X level_raw=%u level_normal=%u stable_s=%u "
+           "peripheral=0x%04X level_valid=%s water=%s shortage=%s "
            "tx=%" PRIu32 " valid=%" PRIu32 " timeout=%" PRIu32
            " crc=%" PRIu32 "\n",
            comm_diagnostics_state_to_string(diag.state),
@@ -153,10 +207,13 @@ static int command_status(int argc, char **argv)
            ihm_command_service_is_handshake_complete() ? "yes" : "no",
            ihm_command_service_is_e08_active() ? "active" : "inactive",
            parameter_cache_is_fresh() ? "fresh" : "stale",
-           cache.runtime_valid ? cache.peripheral_status : 0U,
-           cache.runtime_valid ? cache.level_electrical : 0U,
-           cache.runtime_valid ? cache.level_raw_normal : 0U,
-           cache.runtime_valid ? cache.level_stable_seconds : 0U,
+           peripheral,
+           (peripheral & REG_PERIPHERAL_LEVEL_VALID_MASK) != 0U ?
+               "yes" : "no",
+           (peripheral & REG_PERIPHERAL_WATER_AVAILABLE_MASK) != 0U ?
+               "available" : "unavailable",
+           (peripheral & REG_PERIPHERAL_WATER_SHORTAGE_MASK) != 0U ?
+               "yes" : "no",
            diag.requests_sent, diag.valid_responses,
            diag.response_timeouts, diag.crc_errors);
     return 0;
@@ -263,6 +320,7 @@ static int command_peripheral(int argc, char **argv)
     uint16_t active_mask;
     uint16_t pin_mask;
     app_comm_result_t result;
+    bool enabling = false;
 
     if (argc != 2)
     {
@@ -282,8 +340,9 @@ static int command_peripheral(int argc, char **argv)
 
     if ((strcmp(argv[1], "on") == 0) || (strcmp(argv[1], "ligar") == 0))
     {
+        enabling = true;
         if (!direct_write(REG_CONTROL_COMMAND, on_command, &result) ||
-            !result_ok(&result))
+            !peripheral_command_ok(pump, enabling, &result))
         {
             return 1;
         }
@@ -292,7 +351,7 @@ static int command_peripheral(int argc, char **argv)
              (strcmp(argv[1], "desligar") == 0))
     {
         if (!direct_write(REG_CONTROL_COMMAND, off_command, &result) ||
-            !result_ok(&result))
+            !peripheral_command_ok(pump, enabling, &result))
         {
             return 1;
         }
@@ -309,12 +368,32 @@ static int command_peripheral(int argc, char **argv)
     {
         return 1;
     }
-    printf("OK %s requested=%s active=%s pin=%s status=0x%04X\n",
-           pump ? "bomba" : "swing",
-           (result.values[0] & requested_mask) != 0U ? "on" : "off",
-           (result.values[0] & active_mask) != 0U ? "on" : "off",
-           (result.values[0] & pin_mask) != 0U ? "high" : "low",
-           result.values[0]);
+    if (pump)
+    {
+        const uint16_t status = result.values[0];
+        app_comm_result_t block;
+
+        if (!direct_read(REG_DIAG_PUMP_BLOCK_REASON, 1U, &block) ||
+            !result_ok(&block))
+        {
+            return 1;
+        }
+        printf("OK bomba requested=%s active=%s pin=%s block=%s(%u) "
+               "status=0x%04X\n",
+               (status & requested_mask) != 0U ? "on" : "off",
+               (status & active_mask) != 0U ? "on" : "off",
+               (status & pin_mask) != 0U ? "high" : "low",
+               pump_block_reason_to_string(block.values[0]),
+               block.values[0], status);
+    }
+    else
+    {
+        printf("OK swing requested=%s active=%s pin=%s status=0x%04X\n",
+               (result.values[0] & requested_mask) != 0U ? "on" : "off",
+               (result.values[0] & active_mask) != 0U ? "on" : "off",
+               (result.values[0] & pin_mask) != 0U ? "high" : "low",
+               result.values[0]);
+    }
     return 0;
 }
 

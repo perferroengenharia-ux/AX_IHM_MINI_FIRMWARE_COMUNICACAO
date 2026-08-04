@@ -14,12 +14,6 @@ typedef struct
     uint16_t status_word;
     uint16_t current_error;
     uint16_t peripheral_status;
-    uint16_t level_electrical;
-    uint16_t level_raw_normal;
-    uint16_t level_stable_seconds;
-    uint16_t pump_block_reason;
-    uint16_t swing_block_reason;
-    uint16_t electrical_fault_mask;
     uint64_t last_runtime_ms;
     uint16_t consecutive_runtime_failures;
     bool runtime_valid;
@@ -28,8 +22,6 @@ typedef struct
 void parameter_cache_init(void);
 bool parameter_cache_update_runtime_snapshot(
     const uint16_t status_values[3],
-    const uint16_t level_values[3],
-    const uint16_t block_values[3],
     uint64_t timestamp_ms);
 void parameter_cache_record_runtime_failure(void);
 bool parameter_cache_is_fresh(void);

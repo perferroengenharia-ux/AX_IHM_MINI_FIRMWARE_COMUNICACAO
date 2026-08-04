@@ -26,13 +26,9 @@ void parameter_cache_init(void)
 
 bool parameter_cache_update_runtime_snapshot(
     const uint16_t status_values[3],
-    const uint16_t level_values[3],
-    const uint16_t block_values[3],
     uint64_t timestamp_ms)
 {
-    if ((status_values == NULL) ||
-        (level_values == NULL) ||
-        (block_values == NULL))
+    if (status_values == NULL)
     {
         return false;
     }
@@ -41,12 +37,6 @@ bool parameter_cache_update_runtime_snapshot(
     s_cache.status_word = status_values[0];
     s_cache.current_error = status_values[1];
     s_cache.peripheral_status = status_values[2];
-    s_cache.level_electrical = level_values[0];
-    s_cache.level_raw_normal = level_values[1];
-    s_cache.level_stable_seconds = level_values[2];
-    s_cache.pump_block_reason = block_values[0];
-    s_cache.swing_block_reason = block_values[1];
-    s_cache.electrical_fault_mask = block_values[2];
     s_cache.last_runtime_ms = timestamp_ms;
     s_cache.consecutive_runtime_failures = 0U;
     s_cache.runtime_valid = true;
