@@ -16,6 +16,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 
 #include <errno.h>
@@ -25,7 +26,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-1.0.2"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-1.0.3"
+#define PARAMETER_SYNC_WAIT_MS 6000U
 
 static const char *TAG = "ihm_console";
 
@@ -146,6 +148,53 @@ static const char *pump_block_reason_to_string(uint16_t reason)
     }
 }
 
+static bool read_pump_block_reason(uint16_t *reason)
+{
+    app_comm_result_t block;
+
+    if ((reason == NULL) ||
+        !direct_read(REG_DIAG_PUMP_BLOCK_REASON, 1U, &block) ||
+        (block.status != APP_COMM_RESULT_OK))
+    {
+        return false;
+    }
+    *reason = block.values[0];
+    return true;
+}
+
+static bool wait_for_parameter_sync(void)
+{
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t timeout = pdMS_TO_TICKS(PARAMETER_SYNC_WAIT_MS);
+    const TickType_t interval = pdMS_TO_TICKS(50U) == 0U ?
+                                1U : pdMS_TO_TICKS(50U);
+
+    for (;;)
+    {
+        if (!ihm_command_service_is_sync_pending() &&
+            ihm_command_service_is_handshake_complete())
+        {
+            return true;
+        }
+        if ((xTaskGetTickCount() - start) >= timeout)
+        {
+            return false;
+        }
+        vTaskDelay(interval);
+    }
+}
+
+static void print_sync_failure(void)
+{
+    app_sync_snapshot_t sync;
+
+    app_get_sync_snapshot(&sync);
+    printf("ERR PARAMETER_SYNC state=%s step=%u last=%s\n",
+           app_sync_state_to_string(sync.state),
+           sync.step,
+           app_comm_result_to_string(sync.last_error));
+}
+
 static bool peripheral_command_ok(bool pump,
                                   bool enabling,
                                   const app_comm_result_t *result)
@@ -159,14 +208,12 @@ static bool peripheral_command_ok(bool pump,
         (result->status == APP_COMM_RESULT_EXCEPTION) &&
         (result->exception_code == 0x03U))
     {
-        app_comm_result_t block;
+        uint16_t reason;
 
-        if (direct_read(REG_DIAG_PUMP_BLOCK_REASON, 1U, &block) &&
-            (block.status == APP_COMM_RESULT_OK))
+        if (read_pump_block_reason(&reason))
         {
             printf("ERR PUMP_BLOCKED reason=%s code=%u\n",
-                   pump_block_reason_to_string(block.values[0]),
-                   block.values[0]);
+                   pump_block_reason_to_string(reason), reason);
             return false;
         }
     }
@@ -341,8 +388,38 @@ static int command_peripheral(int argc, char **argv)
     if ((strcmp(argv[1], "on") == 0) || (strcmp(argv[1], "ligar") == 0))
     {
         enabling = true;
-        if (!direct_write(REG_CONTROL_COMMAND, on_command, &result) ||
-            !peripheral_command_ok(pump, enabling, &result))
+        if (!direct_write(REG_CONTROL_COMMAND, on_command, &result))
+        {
+            return 1;
+        }
+        if (pump && (result.status == APP_COMM_RESULT_EXCEPTION) &&
+            (result.exception_code == 0x03U))
+        {
+            uint16_t reason;
+
+            if (read_pump_block_reason(&reason) &&
+                (reason == REG_BLOCK_PARAMETERS_NOT_SYNCED))
+            {
+                if (ihm_command_service_is_edit_unlocked())
+                {
+                    printf("ERR PUMP_BLOCKED reason=parameter_edit_unlocked "
+                           "action=param_lock\n");
+                    return 1;
+                }
+                printf("INFO pump=resyncing_parameters\n");
+                app_request_parameter_sync();
+                if (!wait_for_parameter_sync())
+                {
+                    print_sync_failure();
+                    return 1;
+                }
+                if (!direct_write(REG_CONTROL_COMMAND, on_command, &result))
+                {
+                    return 1;
+                }
+            }
+        }
+        if (!peripheral_command_ok(pump, enabling, &result))
         {
             return 1;
         }
@@ -575,9 +652,21 @@ static int command_param(int argc, char **argv)
                 return 1;
             }
         }
-        printf("OK edit=locked sync=%s\n",
-               ihm_command_service_is_sync_pending() ?
-                   "requested" : "unchanged");
+        if (ihm_command_service_is_sync_pending())
+        {
+            app_request_parameter_sync();
+            printf("INFO sync=running\n");
+            if (!wait_for_parameter_sync())
+            {
+                print_sync_failure();
+                return 1;
+            }
+            printf("OK edit=locked sync=completed\n");
+        }
+        else
+        {
+            printf("OK edit=locked sync=unchanged\n");
+        }
         return 0;
     }
     if ((strcmp(action, "set") == 0) && (argc == 4) &&
@@ -626,7 +715,14 @@ static int command_param(int argc, char **argv)
                    ihm_command_status_to_string(command_status));
             return 1;
         }
-        printf("OK defaults=restored edit=locked sync=requested\n");
+        app_request_parameter_sync();
+        printf("INFO defaults=restored sync=running\n");
+        if (!wait_for_parameter_sync())
+        {
+            print_sync_failure();
+            return 1;
+        }
+        printf("OK defaults=restored edit=locked sync=completed\n");
         return 0;
     }
 

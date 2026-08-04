@@ -41,7 +41,12 @@ sync status
 ```
 
 As alterações são validadas e persistidas no NVS. A sincronização com o STM32
-fica pausada durante a edição e é solicitada uma única vez em `param lock`.
+fica pausada durante a edição. `param lock` só retorna sucesso depois de o
+handshake terminar, evitando comandos de bomba durante a janela de atualização.
+
+Se a bomba encontrar o bloqueio transitório `parameters_not_synced`, o terminal
+solicita uma sincronização, aguarda a conclusão e tenta `PUMP_ON` novamente uma
+única vez. Os demais intertravamentos continuam sendo respeitados.
 
 O comando `bomba status` informa também o motivo de bloqueio. Se `bomba on`
 for recusado pelo STM32, o terminal mostra `PUMP_BLOCKED` com a causa exata,
