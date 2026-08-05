@@ -39,6 +39,7 @@
 #define COMM_STM32_STARTUP_DELAY_MS       ((uint32_t)500U)
 #define COMM_PARAMETER_POLL_PERIOD_MS     ((uint32_t)500U)
 #define COMM_HEARTBEAT_PERIOD_MS          ((uint32_t)1000U)
+#define COMM_E08_RECOVERY_HEARTBEATS      ((uint8_t)2U)
 #define COMM_CACHE_FRESHNESS_MS           ((uint32_t)1500U)
 
 #define COMM_COMMAND_QUEUE_LENGTH         8U

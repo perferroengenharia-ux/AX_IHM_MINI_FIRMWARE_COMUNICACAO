@@ -27,8 +27,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-MOTOR-1.1.0"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-MOTOR-1.1.1"
 #define PARAMETER_SYNC_WAIT_MS 6000U
+#define E08_RECOVERY_WAIT_MS 12000U
 
 static const char *TAG = "ihm_console";
 static QueueHandle_t s_response_queue;
@@ -158,6 +159,63 @@ static bool direct_write(uint16_t address,
     return submit(&request, result);
 }
 
+static bool wait_for_e08_recovery(void)
+{
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t timeout = pdMS_TO_TICKS(E08_RECOVERY_WAIT_MS);
+    const TickType_t interval = pdMS_TO_TICKS(50U) == 0U ?
+                                1U : pdMS_TO_TICKS(50U);
+
+    for (;;)
+    {
+        if (!ihm_command_service_is_e08_active() &&
+            ihm_command_service_is_handshake_complete())
+        {
+            return true;
+        }
+        if ((xTaskGetTickCount() - start) >= timeout)
+        {
+            printf("ERR E08_RECOVERY_TIMEOUT use=\"status; sync status; "
+                   "comm stats\"\n");
+            return false;
+        }
+        vTaskDelay(interval);
+    }
+}
+
+/*
+ * Um comando operacional pode coincidir com o curto intervalo entre a
+ * deteccao do E08 remoto e sua limpeza automatica. Nesse caso, recuperar o
+ * enlace e repetir o comando uma unica vez em vez de devolver um 0x03
+ * transitorio ao operador.
+ */
+static bool direct_control_write(uint16_t command,
+                                 app_comm_result_t *result)
+{
+    app_comm_result_t status;
+
+    if (!direct_write(REG_CONTROL_COMMAND, command, result))
+    {
+        return false;
+    }
+    if ((result->status != APP_COMM_RESULT_EXCEPTION) ||
+        (result->exception_code != 0x03U) ||
+        !direct_read(REG_STATUS_WORD, 1U, &status) ||
+        (status.status != APP_COMM_RESULT_OK) ||
+        ((status.values[0] & REG_STATUS_E08_ACTIVE_MASK) == 0U))
+    {
+        return true;
+    }
+
+    printf("INFO e08=active recovery=automatic\n");
+    app_request_e08_recovery();
+    if (!wait_for_e08_recovery())
+    {
+        return false;
+    }
+    return direct_write(REG_CONTROL_COMMAND, command, result);
+}
+
 static bool result_ok(const app_comm_result_t *result)
 {
     if (result->status == APP_COMM_RESULT_OK)
@@ -175,7 +233,7 @@ static bool result_ok(const app_comm_result_t *result)
     return false;
 }
 
-static const char *pump_block_reason_to_string(uint16_t reason)
+static const char *peripheral_block_reason_to_string(uint16_t reason)
 {
     switch (reason)
     {
@@ -193,17 +251,21 @@ static const char *pump_block_reason_to_string(uint16_t reason)
             return "level_not_stable";
         case REG_BLOCK_WATER_SHORTAGE:
             return "water_shortage";
+        case REG_BLOCK_P81_DISABLED:
+            return "p81_disabled";
         default:
             return "unknown";
     }
 }
 
-static bool read_pump_block_reason(uint16_t *reason)
+static bool read_peripheral_block_reason(bool pump, uint16_t *reason)
 {
     app_comm_result_t block;
 
     if ((reason == NULL) ||
-        !direct_read(REG_DIAG_PUMP_BLOCK_REASON, 1U, &block) ||
+        !direct_read(pump ? REG_DIAG_PUMP_BLOCK_REASON :
+                            REG_DIAG_SWING_BLOCK_REASON,
+                     1U, &block) ||
         (block.status != APP_COMM_RESULT_OK))
     {
         return false;
@@ -254,16 +316,17 @@ static bool peripheral_command_ok(bool pump,
         return true;
     }
 
-    if (pump && enabling &&
+    if (enabling &&
         (result->status == APP_COMM_RESULT_EXCEPTION) &&
         (result->exception_code == 0x03U))
     {
         uint16_t reason;
 
-        if (read_pump_block_reason(&reason))
+        if (read_peripheral_block_reason(pump, &reason))
         {
-            printf("ERR PUMP_BLOCKED reason=%s code=%u\n",
-                   pump_block_reason_to_string(reason), reason);
+            printf("ERR %s_BLOCKED reason=%s code=%u\n",
+                   pump ? "PUMP" : "SWING",
+                   peripheral_block_reason_to_string(reason), reason);
             return false;
         }
     }
@@ -452,32 +515,33 @@ static int command_peripheral(int argc, char **argv)
     if ((strcmp(argv[1], "on") == 0) || (strcmp(argv[1], "ligar") == 0))
     {
         enabling = true;
-        if (!direct_write(REG_CONTROL_COMMAND, on_command, &result))
+        if (!direct_control_write(on_command, &result))
         {
             return 1;
         }
-        if (pump && (result.status == APP_COMM_RESULT_EXCEPTION) &&
+        if ((result.status == APP_COMM_RESULT_EXCEPTION) &&
             (result.exception_code == 0x03U))
         {
             uint16_t reason;
 
-            if (read_pump_block_reason(&reason) &&
+            if (read_peripheral_block_reason(pump, &reason) &&
                 (reason == REG_BLOCK_PARAMETERS_NOT_SYNCED))
             {
                 if (ihm_command_service_is_edit_unlocked())
                 {
-                    printf("ERR PUMP_BLOCKED reason=parameter_edit_unlocked "
-                           "action=param_lock\n");
+                    printf("ERR %s_BLOCKED reason=parameter_edit_unlocked "
+                           "action=param_lock\n",
+                           pump ? "PUMP" : "SWING");
                     return 1;
                 }
-                printf("INFO pump=resyncing_parameters\n");
+                printf("INFO peripheral=resyncing_parameters\n");
                 app_request_parameter_sync();
                 if (!wait_for_parameter_sync())
                 {
                     print_sync_failure();
                     return 1;
                 }
-                if (!direct_write(REG_CONTROL_COMMAND, on_command, &result))
+                if (!direct_control_write(on_command, &result))
                 {
                     return 1;
                 }
@@ -491,7 +555,7 @@ static int command_peripheral(int argc, char **argv)
     else if ((strcmp(argv[1], "off") == 0) ||
              (strcmp(argv[1], "desligar") == 0))
     {
-        if (!direct_write(REG_CONTROL_COMMAND, off_command, &result) ||
+        if (!direct_control_write(off_command, &result) ||
             !peripheral_command_ok(pump, enabling, &result))
         {
             return 1;
@@ -509,31 +573,24 @@ static int command_peripheral(int argc, char **argv)
     {
         return 1;
     }
-    if (pump)
     {
         const uint16_t status = result.values[0];
         app_comm_result_t block;
+        const uint16_t block_address = pump ?
+            REG_DIAG_PUMP_BLOCK_REASON : REG_DIAG_SWING_BLOCK_REASON;
 
-        if (!direct_read(REG_DIAG_PUMP_BLOCK_REASON, 1U, &block) ||
-            !result_ok(&block))
+        if (!direct_read(block_address, 1U, &block) || !result_ok(&block))
         {
             return 1;
         }
-        printf("OK bomba requested=%s active=%s pin=%s block=%s(%u) "
+        printf("OK %s requested=%s active=%s pin=%s block=%s(%u) "
                "status=0x%04X\n",
+               pump ? "bomba" : "swing",
                (status & requested_mask) != 0U ? "on" : "off",
                (status & active_mask) != 0U ? "on" : "off",
                (status & pin_mask) != 0U ? "high" : "low",
-               pump_block_reason_to_string(block.values[0]),
+               peripheral_block_reason_to_string(block.values[0]),
                block.values[0], status);
-    }
-    else
-    {
-        printf("OK swing requested=%s active=%s pin=%s status=0x%04X\n",
-               (result.values[0] & requested_mask) != 0U ? "on" : "off",
-               (result.values[0] & active_mask) != 0U ? "on" : "off",
-               (result.values[0] & pin_mask) != 0U ? "high" : "low",
-               result.values[0]);
     }
     return 0;
 }
@@ -607,7 +664,7 @@ static bool write_control(uint16_t command)
 {
     app_comm_result_t result;
 
-    return direct_write(REG_CONTROL_COMMAND, command, &result) &&
+    return direct_control_write(command, &result) &&
            result_ok(&result);
 }
 

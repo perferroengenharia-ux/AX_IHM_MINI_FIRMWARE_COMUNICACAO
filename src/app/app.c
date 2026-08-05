@@ -42,8 +42,33 @@ static app_sync_snapshot_t s_sync = {
 };
 static bool s_e08_activation_pending;
 static bool s_e08_recovery_requested;
+static uint8_t s_e08_recovery_heartbeat_streak;
+static bool s_sync_retry_immediate_requested;
 
 static void set_sync_error(app_comm_result_status_t error);
+
+static void request_e08_recovery(void)
+{
+    bool start_new_recovery = false;
+
+    portENTER_CRITICAL(&s_app_lock);
+    if (!s_e08_recovery_requested)
+    {
+        s_e08_recovery_requested = true;
+        s_e08_recovery_heartbeat_streak = 0U;
+        start_new_recovery = true;
+    }
+    portEXIT_CRITICAL(&s_app_lock);
+
+    ihm_command_service_set_e08_active(true);
+    if (start_new_recovery)
+    {
+        ihm_command_service_request_sync();
+        portENTER_CRITICAL(&s_app_lock);
+        s_sync_retry_immediate_requested = true;
+        portEXIT_CRITICAL(&s_app_lock);
+    }
+}
 
 static uint64_t uptime_ms(void)
 {
@@ -715,6 +740,15 @@ static void communication_task(void *context)
         }
 
         now_ms = uptime_ms();
+        portENTER_CRITICAL(&s_app_lock);
+        const bool retry_sync_immediately = s_sync_retry_immediate_requested;
+        s_sync_retry_immediate_requested = false;
+        portEXIT_CRITICAL(&s_app_lock);
+        if (retry_sync_immediately)
+        {
+            next_sync_attempt_ms = now_ms;
+            sync_retry_delay_ms = COMM_SYNC_RETRY_PERIOD_MS;
+        }
         if (ihm_command_service_is_sync_pending() &&
             !ihm_command_service_is_edit_unlocked() &&
             (now_ms >= next_sync_attempt_ms))
@@ -745,11 +779,14 @@ static void communication_task(void *context)
 
         portENTER_CRITICAL(&s_app_lock);
         bool recovery_requested = s_e08_recovery_requested;
+        uint8_t recovery_heartbeat_streak =
+            s_e08_recovery_heartbeat_streak;
         portEXIT_CRITICAL(&s_app_lock);
         if (recovery_requested &&
+            (recovery_heartbeat_streak >=
+             COMM_E08_RECOVERY_HEARTBEATS) &&
             ihm_command_service_is_handshake_complete() &&
-            (comm_diagnostics_get_state() == COMM_STATE_ONLINE) &&
-            !comm_diagnostics_loss_exceeds_tolerance())
+            (comm_diagnostics_get_state() == COMM_STATE_ONLINE))
         {
             const app_comm_result_t clear_result =
                 perform_write(REG_CONTROL_COMMAND, REG_CONTROL_CLEAR_E08);
@@ -758,7 +795,32 @@ static void communication_task(void *context)
                 ihm_command_service_set_e08_active(false);
                 portENTER_CRITICAL(&s_app_lock);
                 s_e08_recovery_requested = false;
+                s_e08_recovery_heartbeat_streak = 0U;
                 portEXIT_CRITICAL(&s_app_lock);
+                ESP_LOGI(TAG, "E08 remoto recuperado");
+            }
+            else
+            {
+                const bool clear_requires_resync =
+                    (clear_result.status == APP_COMM_RESULT_EXCEPTION) &&
+                    (clear_result.exception_code == 0x03U);
+
+                /*
+                 * Uma nova ativacao do watchdog remoto pode ter zerado tanto
+                 * a sincronizacao quanto a contagem de heartbeats do STM32.
+                 * Nao repetir CLEAR_E08 em alta frequencia: exigir dois novos
+                 * heartbeats e, para 0x03, refazer a configuracao completa.
+                 */
+                portENTER_CRITICAL(&s_app_lock);
+                s_e08_recovery_heartbeat_streak = 0U;
+                portEXIT_CRITICAL(&s_app_lock);
+                if (clear_requires_resync)
+                {
+                    ihm_command_service_request_sync();
+                    portENTER_CRITICAL(&s_app_lock);
+                    s_sync_retry_immediate_requested = true;
+                    portEXIT_CRITICAL(&s_app_lock);
+                }
             }
         }
 
@@ -773,6 +835,29 @@ static void communication_task(void *context)
                 (void)parameter_cache_update_runtime_snapshot(
                     status_result.values,
                     uptime_ms());
+                /*
+                 * O STM32 tambem pode originar E08 pelo watchdog proprio,
+                 * por exemplo durante uma pausa de depuracao ou regravacao.
+                 * O polling precisa iniciar a recuperacao mesmo que o ESP32
+                 * nao tenha observado a transicao OFFLINE localmente.
+                 */
+                if ((status_result.values[0] &
+                     REG_STATUS_E08_ACTIVE_MASK) != 0U)
+                {
+                    request_e08_recovery();
+                    if (((status_result.values[0] &
+                          REG_STATUS_PARAMETERS_SYNCED_MASK) == 0U) &&
+                        !ihm_command_service_is_sync_pending())
+                    {
+                        portENTER_CRITICAL(&s_app_lock);
+                        s_e08_recovery_heartbeat_streak = 0U;
+                        portEXIT_CRITICAL(&s_app_lock);
+                        ihm_command_service_request_sync();
+                        portENTER_CRITICAL(&s_app_lock);
+                        s_sync_retry_immediate_requested = true;
+                        portEXIT_CRITICAL(&s_app_lock);
+                    }
+                }
             }
             else
             {
@@ -790,9 +875,26 @@ static void communication_task(void *context)
         {
             const app_comm_result_t heartbeat_result =
                 perform_write(REG_HEARTBEAT_SEQUENCE, heartbeat_sequence);
+            const bool heartbeat_ok =
+                heartbeat_result.status == APP_COMM_RESULT_OK;
 
-            comm_diagnostics_record_heartbeat(
-                heartbeat_result.status == APP_COMM_RESULT_OK);
+            comm_diagnostics_record_heartbeat(heartbeat_ok);
+            portENTER_CRITICAL(&s_app_lock);
+            if (s_e08_recovery_requested)
+            {
+                if (heartbeat_ok)
+                {
+                    if (s_e08_recovery_heartbeat_streak < UINT8_MAX)
+                    {
+                        s_e08_recovery_heartbeat_streak++;
+                    }
+                }
+                else
+                {
+                    s_e08_recovery_heartbeat_streak = 0U;
+                }
+            }
+            portEXIT_CRITICAL(&s_app_lock);
             if (comm_diagnostics_should_activate_e08())
             {
                 ihm_command_service_set_e08_active(true);
@@ -818,12 +920,8 @@ static void communication_task(void *context)
                  * falha isolada seguida de recuperacao nao reinicia o
                  * handshake nem ocupa a comunicacao desnecessariamente.
                  */
-                ihm_command_service_set_e08_active(true);
-                ihm_command_service_request_sync();
+                request_e08_recovery();
                 last_auto_sync_request_ms = uptime_ms();
-                portENTER_CRITICAL(&s_app_lock);
-                s_e08_recovery_requested = true;
-                portEXIT_CRITICAL(&s_app_lock);
             }
             previous_comm_state = current_state;
         }
@@ -916,14 +1014,14 @@ bool app_is_polling_enabled(void)
 void app_request_parameter_sync(void)
 {
     ihm_command_service_request_sync();
+    portENTER_CRITICAL(&s_app_lock);
+    s_sync_retry_immediate_requested = true;
+    portEXIT_CRITICAL(&s_app_lock);
 }
 
 void app_request_e08_recovery(void)
 {
-    portENTER_CRITICAL(&s_app_lock);
-    s_e08_recovery_requested = true;
-    portEXIT_CRITICAL(&s_app_lock);
-    ihm_command_service_request_sync();
+    request_e08_recovery();
 }
 
 void app_get_sync_snapshot(app_sync_snapshot_t *snapshot)
