@@ -327,8 +327,10 @@ static void test_parameter_blob_and_local_p00(void)
     CHECK(parameters.values[IHM_PARAM_P30] == 1U);
     CHECK(parameters.values[IHM_PARAM_P31] == 3U);
     CHECK(parameters.values[IHM_PARAM_P42] == 10U);
-    CHECK(ihm_parameters_set(&parameters, IHM_PARAM_P42, 20U));
+    CHECK(!ihm_parameters_set(&parameters, IHM_PARAM_P42, 20U));
     CHECK(!ihm_parameters_set(&parameters, IHM_PARAM_P42, 15U));
+    CHECK(!ihm_parameters_set(&parameters, IHM_PARAM_P41, 50U));
+    CHECK(!ihm_parameters_set(&parameters, IHM_PARAM_P21, 6001U));
     CHECK(parameters.values[IHM_PARAM_P43] == 600U);
     CHECK(parameters.values[IHM_PARAM_P45] == 180U);
     CHECK(parameters.values[IHM_PARAM_P81] == 1U);
@@ -353,6 +355,10 @@ static void test_parameter_blob_and_local_p00(void)
     comm_diagnostics_init();
     CHECK(ihm_command_service_init() == ESP_OK);
     CHECK(!ihm_command_service_is_edit_unlocked());
+    CHECK(ihm_command_service_get_motor_start_frequency() == 500U);
+    CHECK(ihm_command_service_remember_motor_frequency(3000U) ==
+          IHM_COMMAND_OK);
+    CHECK(ihm_command_service_get_motor_start_frequency() == 3000U);
     CHECK(ihm_command_service_set_parameter(IHM_PARAM_P43, 450U) ==
           IHM_COMMAND_PARAMETER_LOCKED);
     CHECK(ihm_command_service_p00(7U) == IHM_COMMAND_OK);
@@ -366,6 +372,7 @@ static void test_parameter_blob_and_local_p00(void)
     CHECK(ihm_command_service_init() == ESP_OK);
     ihm_command_service_get_parameters(&parameters);
     CHECK(parameters.values[IHM_PARAM_P43] == 450U);
+    CHECK(ihm_command_service_get_motor_start_frequency() == 3000U);
 
     /* CRC invalido causa retorno seguro aos padroes. */
     mock_parameter_storage_corrupt();

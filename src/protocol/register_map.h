@@ -178,6 +178,7 @@ typedef enum
 #define REG_MOTOR_BLOCK_DIRECTION          ((uint16_t)0x0008U)
 #define REG_MOTOR_BLOCK_TARGET_FREQUENCY   ((uint16_t)0x0010U)
 #define REG_MOTOR_BLOCK_E08                ((uint16_t)0x0020U)
+#define REG_MOTOR_BLOCK_SAFETY             ((uint16_t)0x0040U)
 
 #define REG_CYCLE_DIAGNOSTIC_COUNT         ((uint16_t)4U)
 #define REG_CYCLE_IDLE                     ((uint16_t)0U)

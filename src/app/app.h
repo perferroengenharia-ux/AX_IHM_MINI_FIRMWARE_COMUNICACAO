@@ -36,6 +36,7 @@ typedef enum
 
 typedef struct
 {
+    uint32_t request_id;
     app_comm_request_type_t type;
     uint16_t address;
     uint16_t quantity;
@@ -45,6 +46,7 @@ typedef struct
 
 typedef struct
 {
+    uint32_t request_id;
     app_comm_result_status_t status;
     uint16_t values[MODBUS_READ_MAX_REGISTERS];
     uint16_t quantity;

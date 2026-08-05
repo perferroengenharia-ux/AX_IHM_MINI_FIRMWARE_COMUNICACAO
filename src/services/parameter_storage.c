@@ -7,9 +7,35 @@
 
 #define PARAMETER_NVS_NAMESPACE "ihm_config"
 #define PARAMETER_NVS_KEY       "parameters"
+#define MOTOR_FREQUENCY_NVS_KEY "motor_freq"
 
 static nvs_handle_t s_nvs_handle;
 static bool s_initialized;
+
+esp_err_t parameter_storage_load_motor_frequency(uint16_t *centihz)
+{
+    if (!s_initialized || (centihz == NULL))
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return nvs_get_u16(s_nvs_handle, MOTOR_FREQUENCY_NVS_KEY, centihz);
+}
+
+esp_err_t parameter_storage_save_motor_frequency(uint16_t centihz)
+{
+    esp_err_t error;
+
+    if (!s_initialized)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    error = nvs_set_u16(s_nvs_handle, MOTOR_FREQUENCY_NVS_KEY, centihz);
+    if (error == ESP_OK)
+    {
+        error = nvs_commit(s_nvs_handle);
+    }
+    return error;
+}
 
 esp_err_t parameter_storage_save(const ihm_parameter_blob_t *parameters)
 {

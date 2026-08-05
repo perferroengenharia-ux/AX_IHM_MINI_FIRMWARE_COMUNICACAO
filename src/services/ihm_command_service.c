@@ -15,6 +15,15 @@ static bool s_edit_unlocked;
 static bool s_sync_pending;
 static bool s_handshake_complete;
 static bool s_e08_active;
+static uint16_t s_remembered_motor_frequency;
+
+static bool motor_frequency_is_valid(uint16_t centihz,
+                                     const ihm_parameter_blob_t *parameters)
+{
+    return (centihz >= parameters->values[IHM_PARAM_P20]) &&
+           (centihz <= parameters->values[IHM_PARAM_P21]) &&
+           (centihz <= 6000U);
+}
 
 esp_err_t ihm_command_service_init(void)
 {
@@ -29,6 +38,17 @@ esp_err_t ihm_command_service_init(void)
     s_sync_pending = true;
     s_handshake_complete = false;
     s_e08_active = false;
+    s_remembered_motor_frequency = s_parameters.values[IHM_PARAM_P20];
+    if ((s_parameters.values[IHM_PARAM_P12] != 0U) &&
+        ((parameter_storage_load_motor_frequency(
+              &s_remembered_motor_frequency) != ESP_OK) ||
+         !motor_frequency_is_valid(s_remembered_motor_frequency,
+                                   &s_parameters)))
+    {
+        s_remembered_motor_frequency = s_parameters.values[IHM_PARAM_P20];
+        (void)parameter_storage_save_motor_frequency(
+            s_remembered_motor_frequency);
+    }
     (void)comm_diagnostics_set_p91(
         (uint8_t)s_parameters.values[IHM_PARAM_P91]);
     ESP_LOGI(TAG,
@@ -64,6 +84,9 @@ ihm_command_status_t ihm_command_service_p00(uint16_t command)
         portEXIT_CRITICAL(&s_lock);
         (void)comm_diagnostics_set_p91(
             (uint8_t)defaults.values[IHM_PARAM_P91]);
+        s_remembered_motor_frequency = defaults.values[IHM_PARAM_P20];
+        (void)parameter_storage_save_motor_frequency(
+            s_remembered_motor_frequency);
         return IHM_COMMAND_OK;
     }
     return IHM_COMMAND_INVALID_ARGUMENT;
@@ -103,6 +126,21 @@ ihm_command_status_t ihm_command_service_set_parameter(ihm_parameter_id_t id,
     if (id == IHM_PARAM_P91)
     {
         (void)comm_diagnostics_set_p91((uint8_t)value);
+    }
+    else if ((id == IHM_PARAM_P12) || (id == IHM_PARAM_P20) ||
+             (id == IHM_PARAM_P21))
+    {
+        portENTER_CRITICAL(&s_lock);
+        if ((s_parameters.values[IHM_PARAM_P12] == 0U) ||
+            !motor_frequency_is_valid(s_remembered_motor_frequency,
+                                      &s_parameters))
+        {
+            s_remembered_motor_frequency =
+                s_parameters.values[IHM_PARAM_P20];
+        }
+        value = s_remembered_motor_frequency;
+        portEXIT_CRITICAL(&s_lock);
+        (void)parameter_storage_save_motor_frequency(value);
     }
     return IHM_COMMAND_OK;
 }
@@ -184,6 +222,44 @@ bool ihm_command_service_is_e08_active(void)
     value = s_e08_active;
     portEXIT_CRITICAL(&s_lock);
     return value;
+}
+
+uint16_t ihm_command_service_get_motor_start_frequency(void)
+{
+    uint16_t value;
+
+    portENTER_CRITICAL(&s_lock);
+    value = (s_parameters.values[IHM_PARAM_P12] != 0U) ?
+            s_remembered_motor_frequency :
+            s_parameters.values[IHM_PARAM_P20];
+    portEXIT_CRITICAL(&s_lock);
+    return value;
+}
+
+ihm_command_status_t ihm_command_service_remember_motor_frequency(
+    uint16_t centihz)
+{
+    bool remember;
+
+    portENTER_CRITICAL(&s_lock);
+    if (!motor_frequency_is_valid(centihz, &s_parameters))
+    {
+        portEXIT_CRITICAL(&s_lock);
+        return IHM_COMMAND_INVALID_ARGUMENT;
+    }
+    remember = s_parameters.values[IHM_PARAM_P12] != 0U;
+    if (remember)
+    {
+        s_remembered_motor_frequency = centihz;
+    }
+    portEXIT_CRITICAL(&s_lock);
+
+    if (remember &&
+        (parameter_storage_save_motor_frequency(centihz) != ESP_OK))
+    {
+        return IHM_COMMAND_STORAGE_ERROR;
+    }
+    return IHM_COMMAND_OK;
 }
 
 const char *ihm_command_status_to_string(ihm_command_status_t status)

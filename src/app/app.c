@@ -15,6 +15,7 @@
 #include "rs485_master.h"
 
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/task.h"
 
@@ -141,6 +142,21 @@ static bool prepare_modbus_request(const app_comm_request_t *source,
     }
 }
 
+static uint32_t response_timeout_ms(const app_comm_request_t *source)
+{
+    uint32_t response_bytes = 8U;
+    uint32_t wire_time_ms;
+
+    if (source->type == APP_COMM_REQUEST_READ)
+    {
+        response_bytes = 5U + ((uint32_t)source->quantity * 2U);
+    }
+    wire_time_ms = (uint32_t)((((uint64_t)response_bytes * 11ULL * 1000ULL) +
+                               COMM_UART_BAUD_RATE - 1U) /
+                              COMM_UART_BAUD_RATE);
+    return wire_time_ms + COMM_RESPONSE_PROCESSING_MARGIN_MS;
+}
+
 static app_comm_result_status_t map_transport_error(
     rs485_transfer_status_t status)
 {
@@ -237,7 +253,7 @@ static app_comm_result_t execute_modbus_request(
             response_frame,
             sizeof(response_frame),
             &response_length,
-            COMM_RESPONSE_TIMEOUT_MS);
+            response_timeout_ms(source));
 
         if (transfer_status != RS485_TRANSFER_OK)
         {
@@ -266,14 +282,9 @@ static app_comm_result_t execute_modbus_request(
                                  app_comm_result_to_string(result.status));
             if (parse_status == MODBUS_PARSE_EXCEPTION)
             {
-                /*
-                 * Uma excecao Modbus com endereco e CRC validos prova que o
-                 * enlace respondeu. Ela e erro da operacao, nao perda RS485.
-                 */
                 comm_diagnostics_record_valid_response();
                 comm_diagnostics_record_latency(
                     (uint32_t)(uptime_ms() - s_last_request_start_ms));
-                link_alive = true;
                 result.exception_code = response.exception_code;
                 break;
             }
@@ -516,6 +527,21 @@ static bool run_parameter_handshake(void)
     portEXIT_CRITICAL(&s_app_lock);
     ihm_command_service_get_parameters(&parameters);
 
+    result = perform_read(REG_STATUS_WORD, 1U);
+    if (!result_is_ok(result))
+    {
+        goto cleanup;
+    }
+    if ((result.values[0] &
+         (REG_STATUS_MOTOR_RUNNING_MASK |
+          REG_STATUS_CYCLE_ACTIVE_MASK)) != 0U)
+    {
+        set_sync_error(APP_COMM_RESULT_INVALID_ARGUMENT);
+        ESP_LOGI(TAG,
+                 "Sincronizacao adiada: motor ou rotina ainda ativo");
+        goto cleanup;
+    }
+
     set_sync_state(APP_SYNC_READING_ID, 1U);
     if (!validate_identity_register("versão do protocolo",
                                     REG_PROTOCOL_VERSION,
@@ -561,6 +587,14 @@ static bool run_parameter_handshake(void)
 
     set_sync_state(APP_SYNC_LOCKING, 7U);
     if (!stm32_set_write_lock(false))
+    {
+        goto cleanup;
+    }
+
+    result = perform_write(
+        REG_MOTOR_TARGET_COMMAND,
+        ihm_command_service_get_motor_start_frequency());
+    if (!result_is_ok(result))
     {
         goto cleanup;
     }
@@ -627,6 +661,7 @@ static void answer_queued_command(const queued_command_t *command)
     {
         result = execute_modbus_request(&command->request);
     }
+    result.request_id = command->request.request_id;
 
     if (xQueueSend(command->response_queue, &result, 0U) != pdTRUE)
     {
@@ -640,9 +675,16 @@ static void communication_task(void *context)
     uint64_t next_poll_ms;
     uint64_t next_heartbeat_ms;
     uint64_t next_sync_attempt_ms;
+    uint64_t last_auto_sync_request_ms = 0U;
+    uint32_t sync_retry_delay_ms = COMM_SYNC_RETRY_PERIOD_MS;
     comm_state_t previous_comm_state = COMM_STATE_CONNECTING;
 
     (void)context;
+
+    if (esp_task_wdt_add(NULL) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Falha ao registrar watchdog da task Modbus");
+    }
 
     while (rs485_master_init() != ESP_OK)
     {
@@ -663,6 +705,8 @@ static void communication_task(void *context)
         queued_command_t command;
         uint64_t now_ms;
 
+        (void)esp_task_wdt_reset();
+
         if (xQueueReceive(s_command_queue,
                           &command,
                           milliseconds_to_ticks_ceil(10U)) == pdTRUE)
@@ -675,8 +719,21 @@ static void communication_task(void *context)
             !ihm_command_service_is_edit_unlocked() &&
             (now_ms >= next_sync_attempt_ms))
         {
-            (void)run_parameter_handshake();
-            next_sync_attempt_ms = uptime_ms() + COMM_SYNC_RETRY_PERIOD_MS;
+            const bool sync_ok = run_parameter_handshake();
+
+            if (sync_ok)
+            {
+                sync_retry_delay_ms = COMM_SYNC_RETRY_PERIOD_MS;
+            }
+            else if (sync_retry_delay_ms < COMM_SYNC_RETRY_MAX_MS)
+            {
+                sync_retry_delay_ms *= 2U;
+                if (sync_retry_delay_ms > COMM_SYNC_RETRY_MAX_MS)
+                {
+                    sync_retry_delay_ms = COMM_SYNC_RETRY_MAX_MS;
+                }
+            }
+            next_sync_attempt_ms = uptime_ms() + sync_retry_delay_ms;
         }
 
         if (s_e08_activation_pending)
@@ -751,7 +808,10 @@ static void communication_task(void *context)
             if ((current_state == COMM_STATE_ONLINE) &&
                 ((previous_comm_state == COMM_STATE_OFFLINE) ||
                  ((previous_comm_state == COMM_STATE_DEGRADED) &&
-                  ihm_command_service_is_e08_active())))
+                  ihm_command_service_is_e08_active())) &&
+                ((last_auto_sync_request_ms == 0U) ||
+                 ((uptime_ms() - last_auto_sync_request_ms) >=
+                  COMM_RESYNC_COOLDOWN_MS)))
             {
                 /*
                  * Ressincroniza somente apos perda real ou E08 ativo. Uma
@@ -760,6 +820,7 @@ static void communication_task(void *context)
                  */
                 ihm_command_service_set_e08_active(true);
                 ihm_command_service_request_sync();
+                last_auto_sync_request_ms = uptime_ms();
                 portENTER_CRITICAL(&s_app_lock);
                 s_e08_recovery_requested = true;
                 portEXIT_CRITICAL(&s_app_lock);

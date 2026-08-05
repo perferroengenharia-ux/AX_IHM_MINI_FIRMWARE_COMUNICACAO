@@ -21,6 +21,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,8 @@
 #define PARAMETER_SYNC_WAIT_MS 6000U
 
 static const char *TAG = "ihm_console";
+static QueueHandle_t s_response_queue;
+static uint32_t s_next_request_id;
 
 static TickType_t timeout_ticks(void)
 {
@@ -69,7 +72,7 @@ static bool parse_hz_centihz(const char *text, uint16_t *value)
     errno = 0;
     parsed = strtod(text, &end);
     if ((errno != 0) || (end == text) || (*end != '\0') ||
-        (parsed < 0.01) || (parsed > 90.0))
+        !isfinite(parsed) || (parsed < 0.01) || (parsed > 60.0))
     {
         return false;
     }
@@ -79,26 +82,53 @@ static bool parse_hz_centihz(const char *text, uint16_t *value)
 
 static bool submit(const app_comm_request_t *request, app_comm_result_t *result)
 {
-    QueueHandle_t queue;
-    bool ok = false;
+    app_comm_request_t identified_request;
+    TickType_t started;
+    TickType_t timeout;
+    TickType_t remaining;
 
-    queue = xQueueCreate(1U, sizeof(*result));
-    if (queue == NULL)
+    if ((request == NULL) || (result == NULL) || (s_response_queue == NULL))
     {
-        printf("ERR NO_MEMORY\n");
+        printf("ERR CONSOLE_QUEUE_UNAVAILABLE\n");
         return false;
     }
-    if ((app_submit_request(request, queue, timeout_ticks()) == ESP_OK) &&
-        (xQueueReceive(queue, result, timeout_ticks()) == pdTRUE))
+
+    identified_request = *request;
+    s_next_request_id++;
+    if (s_next_request_id == 0U)
     {
-        ok = true;
+        s_next_request_id++;
     }
-    else
+    identified_request.request_id = s_next_request_id;
+    timeout = timeout_ticks();
+    started = xTaskGetTickCount();
+
+    if (app_submit_request(&identified_request,
+                           s_response_queue,
+                           timeout) != ESP_OK)
     {
-        printf("ERR RESPONSE_TIMEOUT\n");
+        printf("ERR COMMAND_QUEUE_TIMEOUT\n");
+        return false;
     }
-    vQueueDelete(queue);
-    return ok;
+
+    remaining = timeout;
+    while (xQueueReceive(s_response_queue, result, remaining) == pdTRUE)
+    {
+        const TickType_t elapsed = xTaskGetTickCount() - started;
+
+        if (result->request_id == identified_request.request_id)
+        {
+            return true;
+        }
+        if (elapsed >= timeout)
+        {
+            break;
+        }
+        remaining = timeout - elapsed;
+    }
+
+    printf("ERR RESPONSE_TIMEOUT\n");
+    return false;
 }
 
 static bool direct_read(uint16_t address,
@@ -374,6 +404,7 @@ static int command_mb(int argc, char **argv)
     }
     if (strcmp(argv[1], "write") == 0)
     {
+#if CONSOLE_RAW_WRITE_ENABLED
         if (!direct_write(address, value_or_quantity, &result) ||
             !result_ok(&result))
         {
@@ -382,6 +413,10 @@ static int command_mb(int argc, char **argv)
         printf("OK address=0x%04X value=0x%04X\n",
                address, value_or_quantity);
         return 0;
+#else
+        printf("ERR RAW_WRITE_DISABLED use=specific_control_or_param_command\n");
+        return 1;
+#endif
     }
     printf("ERR use=\"mb read|write ...\"\n");
     return 1;
@@ -585,7 +620,7 @@ static const char *motor_state_to_string(uint16_t state)
         case REG_MOTOR_STATE_STARTING: return "starting";
         case REG_MOTOR_STATE_RUNNING: return "running";
         case REG_MOTOR_STATE_STOPPING: return "stopping";
-        case REG_MOTOR_STATE_FAULT: return "fault_e08";
+        case REG_MOTOR_STATE_FAULT: return "fault";
         default: return "unknown";
     }
 }
@@ -657,7 +692,7 @@ static int print_motor_status(bool pwm_only)
     printf("OK motor_state=%s target=%.2fHz actual=%.2fHz direction=%s "
            "system=%s pwm=%s carrier=%uHz modulation=%.1f%% "
            "motor_monitor=%s blocks=0x%04X[comm=%u params=%u system=%u "
-           "direction=%u target=%u e08=%u]\n",
+           "direction=%u target=%u e08=%u safety=%u]\n",
            motor_state_to_string(motor[0]),
            (double)motor[REG_MOTOR_TARGET_FREQUENCY - REG_MOTOR_STATE] / 100.0,
            (double)motor[REG_MOTOR_ACTUAL_FREQUENCY - REG_MOTOR_STATE] / 100.0,
@@ -683,7 +718,9 @@ static int print_motor_status(bool pwm_only)
            (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
             REG_MOTOR_BLOCK_TARGET_FREQUENCY) != 0U,
            (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
-            REG_MOTOR_BLOCK_E08) != 0U);
+            REG_MOTOR_BLOCK_E08) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+            REG_MOTOR_BLOCK_SAFETY) != 0U);
     return 0;
 }
 
@@ -695,6 +732,11 @@ static bool set_motor_frequency(uint16_t centihz)
         !result_ok(&result))
     {
         return false;
+    }
+    if (ihm_command_service_remember_motor_frequency(centihz) !=
+        IHM_COMMAND_OK)
+    {
+        printf("WARN motor_frequency_applied_but_not_persisted\n");
     }
     printf("OK motor_target=%.2fHz\n", (double)centihz / 100.0);
     return true;
@@ -768,7 +810,7 @@ static int command_motor(int argc, char **argv)
 
         if ((argc == 3) && !parse_hz_centihz(argv[2], &increment))
         {
-            printf("ERR increment=0.01..90.00Hz\n");
+            printf("ERR increment=0.01..60.00Hz\n");
             return 1;
         }
         if (!direct_read(REG_MOTOR_TARGET_FREQUENCY, 1U, &result) ||
@@ -808,9 +850,8 @@ static int command_motor(int argc, char **argv)
     return 1;
 }
 
-static bool update_parameter_and_sync(ihm_parameter_id_t id, uint16_t value)
+static bool remote_configuration_is_idle(void)
 {
-    ihm_command_status_t status;
     app_comm_result_t remote;
 
     if (!direct_read(REG_STATUS_WORD, 1U, &remote) || !result_ok(&remote))
@@ -823,7 +864,14 @@ static bool update_parameter_and_sync(ihm_parameter_id_t id, uint16_t value)
         printf("ERR parameter_update_requires_motor_and_routine_idle\n");
         return false;
     }
+    return true;
+}
 
+static bool update_parameter_and_sync(ihm_parameter_id_t id, uint16_t value)
+{
+    ihm_command_status_t status;
+
+    if (!remote_configuration_is_idle()) { return false; }
     if (ihm_command_service_is_edit_unlocked())
     {
         printf("ERR parameter_edit_unlocked action=param_lock\n");
@@ -864,11 +912,11 @@ static int command_pwm(int argc, char **argv)
     }
     if ((argc == 3) && (strcmp(argv[1], "freq") == 0) &&
         parse_u16(argv[2], &carrier) &&
-        ((carrier == 5U) || (carrier == 10U) || (carrier == 20U)))
+        ((carrier == 5U) || (carrier == 10U)))
     {
         return update_parameter_and_sync(IHM_PARAM_P42, carrier) ? 0 : 1;
     }
-    printf("ERR use=\"pwm status|freq 5|10|20\"\n");
+    printf("ERR use=\"pwm status|freq 5|10\"\n");
     return 1;
 }
 
@@ -948,7 +996,7 @@ static int command_routine(int argc, char **argv)
     if ((argc == 2) && (strcmp(argv[1], "stop") == 0))
     {
         if (!write_control(REG_CONTROL_CYCLE_STOP)) { return 1; }
-        printf("OK routine=stopped\n");
+        printf("OK routine=stop_requested\n");
         return 0;
     }
     printf("ERR use=\"routine wet|dry start | routine stop|status\"\n");
@@ -1007,7 +1055,7 @@ static void print_parameter_help(void)
            "param unlock | param set <Pxx> <raw> | param lock | "
            "param save | param defaults 101 confirm\"\n");
     printf("ACTIVE motor: P10/P11 ramps_s; P20/P21/P32=0.01Hz; "
-           "P35=0..9%% torque; P41=50|60Hz; P42=5|10|20kHz; P51=dir\n");
+           "P35=0..9%% torque; P41=60Hz fixed; P42=5|10kHz; P51=dir\n");
     printf("ACTIVE routines: P30/P31/P86=minutes; P33=dry_reverse; "
            "P81 swing; P82 pump; P85 level_sensor; P91 comm_tolerance\n");
 }
@@ -1075,6 +1123,11 @@ static int command_param(int argc, char **argv)
     }
     if ((strcmp(action, "lock") == 0) && (argc == 2))
     {
+        if (ihm_command_service_is_sync_pending() &&
+            !remote_configuration_is_idle())
+        {
+            return 1;
+        }
         if (ihm_command_service_is_edit_unlocked())
         {
             command_status = ihm_command_service_p00(7U);
@@ -1141,6 +1194,10 @@ static int command_param(int argc, char **argv)
         (strcmp(argv[2], "101") == 0) &&
         (strcmp(argv[3], "confirm") == 0))
     {
+        if (!remote_configuration_is_idle())
+        {
+            return 1;
+        }
         command_status = ihm_command_service_p00(101U);
         if (command_status != IHM_COMMAND_OK)
         {
@@ -1174,6 +1231,10 @@ static int command_sync(int argc, char **argv)
     }
     if (strcmp(argv[1], "run") == 0)
     {
+        if (!remote_configuration_is_idle())
+        {
+            return 1;
+        }
         app_request_parameter_sync();
         printf("OK sync=requested\n");
         return 0;
@@ -1242,7 +1303,7 @@ static esp_err_t register_all_commands(void)
     REGISTER("system", "system on|off|status", command_system);
     REGISTER("motor", "motor start|stop|status|freq|up|down|dir",
              command_motor);
-    REGISTER("pwm", "pwm status|freq 5|10|20", command_pwm);
+    REGISTER("pwm", "pwm status|freq 5|10", command_pwm);
     REGISTER("ramp", "ramp accel|decel <seconds>", command_ramp);
     REGISTER("torque", "torque gain <0..9 percent>", command_torque);
     REGISTER("routine", "routine wet|dry start | stop|status",
@@ -1277,10 +1338,20 @@ esp_err_t console_start(void)
     esp_console_repl_config_t repl_config =
         ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     esp_console_repl_t *repl = NULL;
-    esp_err_t error = register_all_commands();
+    esp_err_t error;
+
+    s_response_queue = xQueueCreate(COMM_COMMAND_QUEUE_LENGTH,
+                                    sizeof(app_comm_result_t));
+    if (s_response_queue == NULL)
+    {
+        return ESP_ERR_NO_MEM;
+    }
+    error = register_all_commands();
 
     if (error != ESP_OK)
     {
+        vQueueDelete(s_response_queue);
+        s_response_queue = NULL;
         return error;
     }
     repl_config.prompt = "comm> ";

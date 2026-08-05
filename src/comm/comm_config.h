@@ -31,7 +31,7 @@
  */
 #define COMM_UART_DE_PRE_DELAY_US          ((uint32_t)1000U)
 
-#define COMM_RESPONSE_TIMEOUT_MS          ((uint32_t)100U)
+#define COMM_RESPONSE_PROCESSING_MARGIN_MS ((uint32_t)50U)
 #define COMM_INTER_FRAME_SILENCE_MS       ((uint32_t)5U)
 #define COMM_MIN_REQUEST_INTERVAL_MS      ((uint32_t)10U)
 #define COMM_MAX_RETRIES                  ((uint8_t)2U)
@@ -49,7 +49,10 @@
 #define CONSOLE_LINE_MAX_SIZE             256U
 #define CONSOLE_RESPONSE_TIMEOUT_MS       ((uint32_t)1000U)
 #define COMM_SYNC_RETRY_PERIOD_MS          ((uint32_t)1000U)
+#define COMM_SYNC_RETRY_MAX_MS             ((uint32_t)30000U)
+#define COMM_RESYNC_COOLDOWN_MS            ((uint32_t)30000U)
 #define COMM_MONITOR_DEFAULT_PERIOD_MS     ((uint32_t)1000U)
 #define COMM_MONITOR_MINIMUM_PERIOD_MS     ((uint32_t)200U)
+#define CONSOLE_RAW_WRITE_ENABLED          0
 
 #endif /* COMM_CONFIG_H */

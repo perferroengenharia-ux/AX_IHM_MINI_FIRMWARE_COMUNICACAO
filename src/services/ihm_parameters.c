@@ -89,19 +89,19 @@ static bool value_is_valid(ihm_parameter_id_t id, uint16_t value)
         case IHM_PARAM_P20:
             return (value >= 100U) && (value <= 2400U);
         case IHM_PARAM_P21:
-            return (value >= 2300U) && (value <= 9000U);
+            return (value >= 2300U) && (value <= 6000U);
         case IHM_PARAM_P30:
         case IHM_PARAM_P31:
         case IHM_PARAM_P86:
             return value <= 240U;
         case IHM_PARAM_P32:
-            return (value == 0U) || ((value >= 100U) && (value <= 9000U));
+            return (value == 0U) || ((value >= 100U) && (value <= 6000U));
         case IHM_PARAM_P35:
             return value <= 9U;
         case IHM_PARAM_P41:
-            return (value == 50U) || (value == 60U);
+            return value == 60U;
         case IHM_PARAM_P42:
-            return (value == 5U) || (value == 10U) || (value == 20U);
+            return (value == 5U) || (value == 10U);
         case IHM_PARAM_P43:
             return value <= 900U;
         case IHM_PARAM_P44:

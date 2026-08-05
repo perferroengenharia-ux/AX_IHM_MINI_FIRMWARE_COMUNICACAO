@@ -135,6 +135,7 @@ rs485_transfer_status_t rs485_master_transceive(
     int64_t deadline_us;
     bool received_any_data = false;
     uint16_t received_length = 0U;
+    uint32_t tx_timeout_ms;
     int written;
 
     if (response_length != NULL)
@@ -175,8 +176,12 @@ rs485_transfer_status_t rs485_master_transceive(
         return RS485_TRANSFER_UART_ERROR;
     }
 
+    tx_timeout_ms = (uint32_t)((((uint64_t)request_length * 11ULL * 1000ULL) +
+                                COMM_UART_BAUD_RATE - 1U) /
+                               COMM_UART_BAUD_RATE) +
+                    COMM_RESPONSE_PROCESSING_MARGIN_MS;
     if (uart_wait_tx_done(COMM_UART_PORT,
-                          milliseconds_to_ticks_ceil(timeout_ms)) != ESP_OK)
+                          milliseconds_to_ticks_ceil(tx_timeout_ms)) != ESP_OK)
     {
         (void)uart_set_rts(COMM_UART_PORT, 1);
         return RS485_TRANSFER_UART_ERROR;

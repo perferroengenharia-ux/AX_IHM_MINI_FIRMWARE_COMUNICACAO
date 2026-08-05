@@ -12,6 +12,14 @@ CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_DEFAULT_LEVEL=3
 
+# Watchdogs de interrupcao e de tasks reiniciam o ESP32 em travamento.
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+
 # Terminal de desenvolvimento da IHM. A interface fisica pode ser trocada
 # junto com a console principal em menuconfig.
 CONFIG_IHM_TERMINAL_ENABLE=y

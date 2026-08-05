@@ -28,6 +28,9 @@ void ihm_command_service_request_sync(void);
 void ihm_command_service_set_sync_result(bool success);
 void ihm_command_service_set_e08_active(bool active);
 bool ihm_command_service_is_e08_active(void);
+uint16_t ihm_command_service_get_motor_start_frequency(void);
+ihm_command_status_t ihm_command_service_remember_motor_frequency(
+    uint16_t centihz);
 const char *ihm_command_status_to_string(ihm_command_status_t status);
 
 #endif /* IHM_COMMAND_SERVICE_H */

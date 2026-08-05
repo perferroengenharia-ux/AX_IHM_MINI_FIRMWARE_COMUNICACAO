@@ -6,11 +6,32 @@
 
 static bool s_has_blob;
 static ihm_parameter_blob_t s_blob;
+static bool s_has_motor_frequency;
+static uint16_t s_motor_frequency;
 
 void mock_parameter_storage_reset(void)
 {
     s_has_blob = false;
+    s_has_motor_frequency = false;
+    s_motor_frequency = 0U;
     (void)memset(&s_blob, 0, sizeof(s_blob));
+}
+
+esp_err_t parameter_storage_load_motor_frequency(uint16_t *centihz)
+{
+    if (!s_has_motor_frequency || (centihz == NULL))
+    {
+        return ESP_FAIL;
+    }
+    *centihz = s_motor_frequency;
+    return ESP_OK;
+}
+
+esp_err_t parameter_storage_save_motor_frequency(uint16_t centihz)
+{
+    s_motor_frequency = centihz;
+    s_has_motor_frequency = true;
+    return ESP_OK;
 }
 
 void mock_parameter_storage_set(const ihm_parameter_blob_t *parameters)
