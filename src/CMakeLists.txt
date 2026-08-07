@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "app/app.c"
+        "comm/communication_policy.c"
         "comm/rs485_master.c"
         "modbus/modbus_master.c"
         "modbus/modbus_crc.c"

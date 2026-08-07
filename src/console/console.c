@@ -27,7 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-MOTOR-1.1.1"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-MOTOR-1.1.2"
 #define PARAMETER_SYNC_WAIT_MS 6000U
 #define E08_RECOVERY_WAIT_MS 12000U
 
@@ -416,12 +416,15 @@ static int command_comm(int argc, char **argv)
         comm_diagnostics_get_snapshot(&diag);
         printf("OK state=%s tx=%" PRIu32 " valid=%" PRIu32
                " timeout=%" PRIu32 " crc=%" PRIu32
-               " protocol=%" PRIu32 " retries=%" PRIu32
+               " protocol=%" PRIu32 " exception=%" PRIu32
+               " failures=%" PRIu32 " retries=%" PRIu32
                " latency=%" PRIu32 "ms\n",
                comm_diagnostics_state_to_string(diag.state),
                diag.requests_sent, diag.valid_responses,
                diag.response_timeouts, diag.crc_errors,
-               diag.protocol_errors, diag.retries, diag.last_latency_ms);
+               diag.protocol_errors, diag.exception_responses,
+               diag.consecutive_failures, diag.retries,
+               diag.last_latency_ms);
         return 0;
     }
     if (strcmp(argv[1], "clear-stats") == 0)

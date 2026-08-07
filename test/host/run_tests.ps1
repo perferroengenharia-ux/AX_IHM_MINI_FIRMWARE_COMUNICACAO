@@ -12,6 +12,7 @@ $sources = @(
     (Join-Path $projectRoot "test\host\test_protocol.c"),
     (Join-Path $projectRoot "src\modbus\modbus_crc.c"),
     (Join-Path $projectRoot "src\modbus\modbus_master.c"),
+    (Join-Path $projectRoot "src\comm\communication_policy.c"),
     (Join-Path $projectRoot "src\diagnostics\comm_diagnostics.c"),
     (Join-Path $projectRoot "src\services\ihm_parameters.c"),
     (Join-Path $projectRoot "src\services\ihm_command_service.c"),

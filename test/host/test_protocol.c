@@ -1,4 +1,5 @@
 #include "comm_diagnostics.h"
+#include "communication_policy.h"
 #include "ihm_command_service.h"
 #include "ihm_parameters.h"
 #include "mock_parameter_storage.h"
@@ -152,6 +153,35 @@ static void test_response_validation(void)
                                        sizeof(expected_response),
                                        &response) ==
           MODBUS_PARSE_INVALID_BYTE_COUNT);
+}
+
+static void test_communication_and_e08_policy(void)
+{
+    CHECK(communication_policy_parse_keeps_link_alive(MODBUS_PARSE_OK));
+    CHECK(communication_policy_parse_keeps_link_alive(
+        MODBUS_PARSE_EXCEPTION));
+    CHECK(!communication_policy_parse_keeps_link_alive(
+        MODBUS_PARSE_CRC_ERROR));
+
+    CHECK(communication_policy_e08_clear_action(
+              true, false, false, 0U) == COMM_E08_CLEAR_COMPLETE);
+    CHECK(communication_policy_e08_clear_action(
+              false, true, true, REG_STATUS_PARAMETERS_SYNCED_MASK) ==
+          COMM_E08_CLEAR_COMPLETE);
+    CHECK(communication_policy_e08_clear_action(
+              false, true, true, REG_STATUS_E08_ACTIVE_MASK) ==
+          COMM_E08_CLEAR_RESYNCHRONIZE);
+    CHECK(communication_policy_e08_clear_action(
+              false, true, true,
+              REG_STATUS_E08_ACTIVE_MASK |
+              REG_STATUS_PARAMETERS_SYNCED_MASK) ==
+          COMM_E08_CLEAR_WAIT_HEARTBEATS);
+    CHECK(communication_policy_e08_clear_action(
+              false, true, false, 0U) ==
+          COMM_E08_CLEAR_WAIT_HEARTBEATS);
+    CHECK(communication_policy_e08_clear_action(
+              false, false, true, 0U) ==
+          COMM_E08_CLEAR_WAIT_HEARTBEATS);
 }
 
 static void test_communication_snapshot_contract(void)
@@ -424,6 +454,7 @@ int main(void)
 {
     test_crc_and_request_builders();
     test_response_validation();
+    test_communication_and_e08_policy();
     test_communication_snapshot_contract();
     test_write_response_echoes();
     test_timeout_disconnect_and_recovery();

@@ -7,6 +7,7 @@
 
 #include "comm_config.h"
 #include "comm_diagnostics.h"
+#include "communication_policy.h"
 #include "console.h"
 #include "ihm_command_service.h"
 #include "ihm_parameters.h"
@@ -298,6 +299,7 @@ static app_comm_result_t execute_modbus_request(
                                                     response_frame,
                                                     response_length,
                                                     &response);
+        link_alive = communication_policy_parse_keeps_link_alive(parse_status);
         if (parse_status != MODBUS_PARSE_OK)
         {
             result.status = map_parse_error(parse_status);
@@ -327,7 +329,6 @@ static app_comm_result_t execute_modbus_request(
                          response.values,
                          (size_t)response.quantity * sizeof(uint16_t));
         }
-        link_alive = true;
         console_trace_submit(request_frame, request_length,
                              response_frame, response_length,
                              (uint32_t)(uptime_ms() - attempt_start_ms),
@@ -700,7 +701,6 @@ static void communication_task(void *context)
     uint64_t next_poll_ms;
     uint64_t next_heartbeat_ms;
     uint64_t next_sync_attempt_ms;
-    uint64_t last_auto_sync_request_ms = 0U;
     uint32_t sync_retry_delay_ms = COMM_SYNC_RETRY_PERIOD_MS;
     comm_state_t previous_comm_state = COMM_STATE_CONNECTING;
 
@@ -790,31 +790,56 @@ static void communication_task(void *context)
         {
             const app_comm_result_t clear_result =
                 perform_write(REG_CONTROL_COMMAND, REG_CONTROL_CLEAR_E08);
-            if (clear_result.status == APP_COMM_RESULT_OK)
+            const bool clear_succeeded =
+                clear_result.status == APP_COMM_RESULT_OK;
+            const bool illegal_value_exception =
+                (clear_result.status == APP_COMM_RESULT_EXCEPTION) &&
+                (clear_result.exception_code == 0x03U);
+            bool remote_status_available = false;
+            uint16_t remote_status_word = 0U;
+            comm_e08_clear_action_t clear_action;
+
+            if (!clear_succeeded && illegal_value_exception)
+            {
+                const app_comm_result_t remote_status =
+                    perform_read(REG_STATUS_WORD, 1U);
+                if (remote_status.status == APP_COMM_RESULT_OK)
+                {
+                    remote_status_available = true;
+                    remote_status_word = remote_status.values[0];
+                }
+            }
+
+            clear_action = communication_policy_e08_clear_action(
+                clear_succeeded,
+                illegal_value_exception,
+                remote_status_available,
+                remote_status_word);
+
+            if (clear_action == COMM_E08_CLEAR_COMPLETE)
             {
                 ihm_command_service_set_e08_active(false);
                 portENTER_CRITICAL(&s_app_lock);
                 s_e08_recovery_requested = false;
                 s_e08_recovery_heartbeat_streak = 0U;
                 portEXIT_CRITICAL(&s_app_lock);
-                ESP_LOGI(TAG, "E08 remoto recuperado");
+                if (clear_succeeded)
+                {
+                    ESP_LOGI(TAG, "E08 remoto recuperado");
+                }
+                else
+                {
+                    ESP_LOGI(TAG,
+                             "Recuperacao encerrada: STM32 sem E08 ativo");
+                }
             }
             else
             {
-                const bool clear_requires_resync =
-                    (clear_result.status == APP_COMM_RESULT_EXCEPTION) &&
-                    (clear_result.exception_code == 0x03U);
-
-                /*
-                 * Uma nova ativacao do watchdog remoto pode ter zerado tanto
-                 * a sincronizacao quanto a contagem de heartbeats do STM32.
-                 * Nao repetir CLEAR_E08 em alta frequencia: exigir dois novos
-                 * heartbeats e, para 0x03, refazer a configuracao completa.
-                 */
+                /* Uma tentativa falha sempre exige dois heartbeats novos. */
                 portENTER_CRITICAL(&s_app_lock);
                 s_e08_recovery_heartbeat_streak = 0U;
                 portEXIT_CRITICAL(&s_app_lock);
-                if (clear_requires_resync)
+                if (clear_action == COMM_E08_CLEAR_RESYNCHRONIZE)
                 {
                     ihm_command_service_request_sync();
                     portENTER_CRITICAL(&s_app_lock);
@@ -909,19 +934,14 @@ static void communication_task(void *context)
                 comm_diagnostics_get_state();
             if ((current_state == COMM_STATE_ONLINE) &&
                 ((previous_comm_state == COMM_STATE_OFFLINE) ||
-                 ((previous_comm_state == COMM_STATE_DEGRADED) &&
-                  ihm_command_service_is_e08_active())) &&
-                ((last_auto_sync_request_ms == 0U) ||
-                 ((uptime_ms() - last_auto_sync_request_ms) >=
-                  COMM_RESYNC_COOLDOWN_MS)))
+                 (previous_comm_state == COMM_STATE_DEGRADED)))
             {
                 /*
-                 * Ressincroniza somente apos perda real ou E08 ativo. Uma
-                 * falha isolada seguida de recuperacao nao reinicia o
-                 * handshake nem ocupa a comunicacao desnecessariamente.
+                 * Voltar a ONLINE nao prova que o watchdog do STM32 gerou
+                 * E08. Antecipar apenas o polling; a ressincronizacao so sera
+                 * solicitada se STATUS_WORD confirmar o bit remoto.
                  */
-                request_e08_recovery();
-                last_auto_sync_request_ms = uptime_ms();
+                next_poll_ms = uptime_ms();
             }
             previous_comm_state = current_state;
         }
