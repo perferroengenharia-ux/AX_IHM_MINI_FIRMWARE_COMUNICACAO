@@ -187,6 +187,18 @@ rs485_transfer_status_t rs485_master_transceive(
         return RS485_TRANSFER_UART_ERROR;
     }
 
+    /*
+     * O driver half-duplex normalmente retorna RTS para recepcao na ISR de
+     * TX_DONE. uart_wait_tx_done(), porem, tambem possui um caminho rapido
+     * quando encontra o transmissor ocioso antes de essa ISR terminar. Forcar
+     * o estado de recepcao aqui fecha essa janela e e inofensivo quando a ISR
+     * ja fez a troca.
+     */
+    if (uart_set_rts(COMM_UART_PORT, 1) != ESP_OK)
+    {
+        return RS485_TRANSFER_UART_ERROR;
+    }
+
     deadline_us = esp_timer_get_time() + timeout_us;
 
     while (esp_timer_get_time() < deadline_us)
@@ -258,9 +270,12 @@ rs485_transfer_status_t rs485_master_transceive(
                 return RS485_TRANSFER_PARITY_ERROR;
 
             case UART_FRAME_ERR:
-            case UART_BREAK:
                 discard_uart_input();
                 return RS485_TRANSFER_FRAMING_ERROR;
+
+            case UART_BREAK:
+                discard_uart_input();
+                return RS485_TRANSFER_BREAK_ERROR;
 
             case UART_FIFO_OVF:
             case UART_BUFFER_FULL:
@@ -295,7 +310,9 @@ const char *rs485_transfer_status_to_string(rs485_transfer_status_t status)
         case RS485_TRANSFER_PARITY_ERROR:
             return "parity";
         case RS485_TRANSFER_FRAMING_ERROR:
-            return "framing_or_break";
+            return "framing";
+        case RS485_TRANSFER_BREAK_ERROR:
+            return "break";
         case RS485_TRANSFER_OVERFLOW:
             return "overflow";
         case RS485_TRANSFER_INVALID_ARGUMENT:

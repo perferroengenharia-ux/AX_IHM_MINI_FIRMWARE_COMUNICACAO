@@ -285,14 +285,16 @@ static app_comm_result_t execute_modbus_request(
 
         if (transfer_status != RS485_TRANSFER_OK)
         {
-            ESP_LOGW(TAG,
-                     "Falha RS485 func=0x%02X reg=0x%04X "
-                     "tentativa=%u/%u transporte=%s",
-                     (unsigned int)request.function,
-                     (unsigned int)request.start_address,
-                     (unsigned int)attempt + 1U,
-                     (unsigned int)COMM_MAX_RETRIES + 1U,
-                     rs485_transfer_status_to_string(transfer_status));
+            if (attempt == COMM_MAX_RETRIES)
+            {
+                ESP_LOGW(TAG,
+                         "Falha RS485 func=0x%02X reg=0x%04X "
+                         "tentativas=%u transporte=%s",
+                         (unsigned int)request.function,
+                         (unsigned int)request.start_address,
+                         (unsigned int)COMM_MAX_RETRIES + 1U,
+                         rs485_transfer_status_to_string(transfer_status));
+            }
             result.status = map_transport_error(transfer_status);
             console_trace_submit(request_frame, request_length,
                                  NULL, 0U,
@@ -881,7 +883,11 @@ static void communication_task(void *context)
         }
 
         now_ms = uptime_ms();
-        if (app_is_polling_enabled() && (now_ms >= next_poll_ms))
+        const bool normal_traffic_enabled =
+            ihm_command_service_is_handshake_complete();
+        if (normal_traffic_enabled &&
+            app_is_polling_enabled() &&
+            (now_ms >= next_poll_ms))
         {
             app_comm_result_t status_result;
 
@@ -921,13 +927,13 @@ static void communication_task(void *context)
             }
             next_poll_ms = uptime_ms() + COMM_PARAMETER_POLL_PERIOD_MS;
         }
-        else if (!app_is_polling_enabled())
+        else if (!normal_traffic_enabled || !app_is_polling_enabled())
         {
             next_poll_ms = now_ms + COMM_PARAMETER_POLL_PERIOD_MS;
         }
 
         now_ms = uptime_ms();
-        if (now_ms >= next_heartbeat_ms)
+        if (normal_traffic_enabled && (now_ms >= next_heartbeat_ms))
         {
             const app_comm_result_t heartbeat_result =
                 perform_write(REG_HEARTBEAT_SEQUENCE, heartbeat_sequence);
@@ -958,6 +964,10 @@ static void communication_task(void *context)
             }
             heartbeat_sequence++;
             next_heartbeat_ms = uptime_ms() + COMM_HEARTBEAT_PERIOD_MS;
+        }
+        else if (!normal_traffic_enabled)
+        {
+            next_heartbeat_ms = now_ms + COMM_HEARTBEAT_PERIOD_MS;
         }
 
         {
