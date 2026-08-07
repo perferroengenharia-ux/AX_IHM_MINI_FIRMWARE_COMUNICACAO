@@ -33,6 +33,7 @@
 
 #define COMM_RESPONSE_PROCESSING_MARGIN_MS ((uint32_t)50U)
 #define COMM_INTER_FRAME_SILENCE_MS       ((uint32_t)5U)
+/* Silencio garantido entre o fim de uma transacao e a proxima requisicao. */
 #define COMM_MIN_REQUEST_INTERVAL_MS      ((uint32_t)10U)
 #define COMM_MAX_RETRIES                  ((uint8_t)2U)
 

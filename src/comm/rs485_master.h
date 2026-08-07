@@ -36,4 +36,7 @@ rs485_transfer_status_t rs485_master_transceive(
     uint16_t *response_length,
     uint32_t timeout_ms);
 
+/** Nome curto e estavel para diagnostico do transporte fisico. */
+const char *rs485_transfer_status_to_string(rs485_transfer_status_t status);
+
 #endif /* RS485_MASTER_H */

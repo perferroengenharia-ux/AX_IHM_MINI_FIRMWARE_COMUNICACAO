@@ -37,6 +37,7 @@ static bool s_polling_enabled = true;
 static bool s_started;
 static bool s_first_valid_response_logged;
 static uint64_t s_last_request_start_ms;
+static uint64_t s_last_transaction_end_ms;
 static app_sync_snapshot_t s_sync = {
     .state = APP_SYNC_IDLE,
     .last_error = APP_COMM_RESULT_OK,
@@ -90,9 +91,9 @@ static TickType_t milliseconds_to_ticks_ceil(uint32_t milliseconds)
 static void wait_minimum_request_interval(void)
 {
     const uint64_t now_ms = uptime_ms();
-    const uint64_t elapsed_ms = now_ms - s_last_request_start_ms;
+    const uint64_t elapsed_ms = now_ms - s_last_transaction_end_ms;
 
-    if ((s_last_request_start_ms != 0U) &&
+    if ((s_last_transaction_end_ms != 0U) &&
         (elapsed_ms < COMM_MIN_REQUEST_INTERVAL_MS))
     {
         vTaskDelay(milliseconds_to_ticks_ceil(
@@ -280,9 +281,18 @@ static app_comm_result_t execute_modbus_request(
             sizeof(response_frame),
             &response_length,
             response_timeout_ms(source));
+        s_last_transaction_end_ms = uptime_ms();
 
         if (transfer_status != RS485_TRANSFER_OK)
         {
+            ESP_LOGW(TAG,
+                     "Falha RS485 func=0x%02X reg=0x%04X "
+                     "tentativa=%u/%u transporte=%s",
+                     (unsigned int)request.function,
+                     (unsigned int)request.start_address,
+                     (unsigned int)attempt + 1U,
+                     (unsigned int)COMM_MAX_RETRIES + 1U,
+                     rs485_transfer_status_to_string(transfer_status));
             result.status = map_transport_error(transfer_status);
             console_trace_submit(request_frame, request_length,
                                  NULL, 0U,
@@ -545,6 +555,8 @@ static bool run_parameter_handshake(void)
 {
     ihm_parameter_blob_t parameters;
     app_comm_result_t result;
+    app_sync_state_t active_state = APP_SYNC_IDLE;
+    uint8_t active_step = 0U;
     bool success = false;
 
     portENTER_CRITICAL(&s_app_lock);
@@ -568,7 +580,9 @@ static bool run_parameter_handshake(void)
         goto cleanup;
     }
 
-    set_sync_state(APP_SYNC_READING_ID, 1U);
+    active_state = APP_SYNC_READING_ID;
+    active_step = 1U;
+    set_sync_state(active_state, active_step);
     if (!validate_identity_register("versão do protocolo",
                                     REG_PROTOCOL_VERSION,
                                     REG_PROTOCOL_VERSION_EXPECTED) ||
@@ -579,39 +593,51 @@ static bool run_parameter_handshake(void)
         goto cleanup;
     }
 
-    set_sync_state(APP_SYNC_UNLOCKING, 2U);
+    active_state = APP_SYNC_UNLOCKING;
+    active_step = 2U;
+    set_sync_state(active_state, active_step);
     if (!stm32_set_write_lock(true))
     {
         goto cleanup;
     }
 
-    set_sync_state(APP_SYNC_BEGIN, 3U);
+    active_state = APP_SYNC_BEGIN;
+    active_step = 3U;
+    set_sync_state(active_state, active_step);
     if (!result_is_ok(perform_write(REG_CONTROL_COMMAND,
                                     REG_CONTROL_PARAM_SYNC_BEGIN)))
     {
         goto cleanup;
     }
 
-    set_sync_state(APP_SYNC_SENDING_PARAMETERS, 4U);
+    active_state = APP_SYNC_SENDING_PARAMETERS;
+    active_step = 4U;
+    set_sync_state(active_state, active_step);
     if (!send_all_parameters(&parameters))
     {
         goto cleanup;
     }
 
-    set_sync_state(APP_SYNC_COMMIT, 5U);
+    active_state = APP_SYNC_COMMIT;
+    active_step = 5U;
+    set_sync_state(active_state, active_step);
     if (!result_is_ok(perform_write(REG_CONTROL_COMMAND,
                                     REG_CONTROL_PARAM_SYNC_COMMIT)))
     {
         goto cleanup;
     }
 
-    set_sync_state(APP_SYNC_VERIFYING, 6U);
+    active_state = APP_SYNC_VERIFYING;
+    active_step = 6U;
+    set_sync_state(active_state, active_step);
     if (!verify_all_parameters(&parameters))
     {
         goto cleanup;
     }
 
-    set_sync_state(APP_SYNC_LOCKING, 7U);
+    active_state = APP_SYNC_LOCKING;
+    active_step = 7U;
+    set_sync_state(active_state, active_step);
     if (!stm32_set_write_lock(false))
     {
         goto cleanup;
@@ -638,11 +664,16 @@ static bool run_parameter_handshake(void)
 cleanup:
     if (!success)
     {
+        const app_comm_result_status_t primary_error = get_sync_error();
+
         (void)stm32_set_write_lock(false);
-        set_sync_state(APP_SYNC_FAILED, 8U);
+        set_sync_error(primary_error);
+        set_sync_state(APP_SYNC_FAILED, active_step);
         ESP_LOGW(TAG,
-                 "Handshake falhou: %s",
-                 app_comm_result_to_string(get_sync_error()));
+                 "Handshake falhou etapa=%s passo=%u: %s",
+                 app_sync_state_to_string(active_state),
+                 (unsigned int)active_step,
+                 app_comm_result_to_string(primary_error));
     }
     else
     {

@@ -281,3 +281,26 @@ rs485_transfer_status_t rs485_master_transceive(
 
     return RS485_TRANSFER_TIMEOUT;
 }
+
+const char *rs485_transfer_status_to_string(rs485_transfer_status_t status)
+{
+    switch (status)
+    {
+        case RS485_TRANSFER_OK:
+            return "ok";
+        case RS485_TRANSFER_TIMEOUT:
+            return "timeout";
+        case RS485_TRANSFER_UART_ERROR:
+            return "uart_api";
+        case RS485_TRANSFER_PARITY_ERROR:
+            return "parity";
+        case RS485_TRANSFER_FRAMING_ERROR:
+            return "framing_or_break";
+        case RS485_TRANSFER_OVERFLOW:
+            return "overflow";
+        case RS485_TRANSFER_INVALID_ARGUMENT:
+            return "invalid_argument";
+        default:
+            return "unknown";
+    }
+}
