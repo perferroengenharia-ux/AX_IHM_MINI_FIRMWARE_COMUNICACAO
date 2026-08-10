@@ -22,6 +22,7 @@
 static const char *TAG = "rs485";
 static QueueHandle_t s_uart_event_queue;
 static bool s_initialized;
+static uint32_t s_recovery_count;
 
 static TickType_t milliseconds_to_ticks_ceil(uint32_t milliseconds)
 {
@@ -43,7 +44,7 @@ static void discard_uart_input(void)
     }
 }
 
-esp_err_t rs485_master_init(void)
+static esp_err_t configure_uart_driver(void)
 {
     const uart_config_t uart_config = {
         .baud_rate = COMM_UART_BAUD_RATE,
@@ -59,11 +60,6 @@ esp_err_t rs485_master_init(void)
         },
     };
     esp_err_t error;
-
-    if (s_initialized)
-    {
-        return ESP_OK;
-    }
 
     error = uart_driver_install(COMM_UART_PORT,
                                 COMM_UART_RX_BUFFER_SIZE,
@@ -113,6 +109,59 @@ esp_err_t rs485_master_init(void)
 
     discard_uart_input();
     s_initialized = true;
+    return ESP_OK;
+}
+
+static esp_err_t recover_uart_driver(void)
+{
+    esp_err_t error;
+
+    if (s_initialized)
+    {
+        /* Solta DE antes de remover o driver, inclusive nos caminhos de erro. */
+        (void)uart_set_rts(COMM_UART_PORT, 1);
+        discard_uart_input();
+        error = uart_driver_delete(COMM_UART_PORT);
+        if (error != ESP_OK)
+        {
+            return error;
+        }
+        s_uart_event_queue = NULL;
+        s_initialized = false;
+    }
+
+    esp_rom_delay_us(COMM_UART_RECOVERY_DELAY_US);
+    error = configure_uart_driver();
+    if (error == ESP_OK)
+    {
+        s_recovery_count++;
+    }
+    return error;
+}
+
+static rs485_transfer_status_t recover_and_return(
+    rs485_transfer_status_t original_status)
+{
+    return recover_uart_driver() == ESP_OK ?
+           original_status : RS485_TRANSFER_UART_ERROR;
+}
+
+esp_err_t rs485_master_init(void)
+{
+    esp_err_t error;
+
+    if (s_initialized)
+    {
+        return ESP_OK;
+    }
+
+    s_recovery_count = 0U;
+    error = configure_uart_driver();
+    if (error != ESP_OK)
+    {
+        return error;
+    }
+
     ESP_LOGI(TAG,
              "UART1 RS485 pronta: RX GPIO%d, TX GPIO%d, RTS/DE GPIO%d, "
              "9600 8E1, pre-DE %" PRIu32 " us",
@@ -143,8 +192,7 @@ rs485_transfer_status_t rs485_master_transceive(
         *response_length = 0U;
     }
 
-    if (!s_initialized ||
-        (request == NULL) ||
+    if ((request == NULL) ||
         (request_length == 0U) ||
         (request_length > COMM_FRAME_MAX_SIZE) ||
         (response == NULL) ||
@@ -153,6 +201,11 @@ rs485_transfer_status_t rs485_master_transceive(
         (timeout_ms == 0U))
     {
         return RS485_TRANSFER_INVALID_ARGUMENT;
+    }
+
+    if (!s_initialized && (recover_uart_driver() != ESP_OK))
+    {
+        return RS485_TRANSFER_UART_ERROR;
     }
 
     discard_uart_input();
@@ -165,7 +218,7 @@ rs485_transfer_status_t rs485_master_transceive(
      */
     if (uart_set_rts(COMM_UART_PORT, 0) != ESP_OK)
     {
-        return RS485_TRANSFER_UART_ERROR;
+        return recover_and_return(RS485_TRANSFER_UART_ERROR);
     }
     esp_rom_delay_us(COMM_UART_DE_PRE_DELAY_US);
 
@@ -173,7 +226,7 @@ rs485_transfer_status_t rs485_master_transceive(
     if (written != (int)request_length)
     {
         (void)uart_set_rts(COMM_UART_PORT, 1);
-        return RS485_TRANSFER_UART_ERROR;
+        return recover_and_return(RS485_TRANSFER_UART_ERROR);
     }
 
     tx_timeout_ms = (uint32_t)((((uint64_t)request_length * 11ULL * 1000ULL) +
@@ -184,7 +237,7 @@ rs485_transfer_status_t rs485_master_transceive(
                           milliseconds_to_ticks_ceil(tx_timeout_ms)) != ESP_OK)
     {
         (void)uart_set_rts(COMM_UART_PORT, 1);
-        return RS485_TRANSFER_UART_ERROR;
+        return recover_and_return(RS485_TRANSFER_UART_ERROR);
     }
 
     /*
@@ -196,7 +249,7 @@ rs485_transfer_status_t rs485_master_transceive(
      */
     if (uart_set_rts(COMM_UART_PORT, 1) != ESP_OK)
     {
-        return RS485_TRANSFER_UART_ERROR;
+        return recover_and_return(RS485_TRANSFER_UART_ERROR);
     }
 
     deadline_us = esp_timer_get_time() + timeout_us;
@@ -239,7 +292,7 @@ rs485_transfer_status_t rs485_master_transceive(
                 if (event.size > (size_t)(response_capacity - received_length))
                 {
                     discard_uart_input();
-                    return RS485_TRANSFER_OVERFLOW;
+                    return recover_and_return(RS485_TRANSFER_OVERFLOW);
                 }
 
                 read_length = uart_read_bytes(
@@ -250,7 +303,7 @@ rs485_transfer_status_t rs485_master_transceive(
 
                 if (read_length < 0)
                 {
-                    return RS485_TRANSFER_UART_ERROR;
+                    return recover_and_return(RS485_TRANSFER_UART_ERROR);
                 }
 
                 received_length = (uint16_t)(received_length +
@@ -267,20 +320,20 @@ rs485_transfer_status_t rs485_master_transceive(
 
             case UART_PARITY_ERR:
                 discard_uart_input();
-                return RS485_TRANSFER_PARITY_ERROR;
+                return recover_and_return(RS485_TRANSFER_PARITY_ERROR);
 
             case UART_FRAME_ERR:
                 discard_uart_input();
-                return RS485_TRANSFER_FRAMING_ERROR;
+                return recover_and_return(RS485_TRANSFER_FRAMING_ERROR);
 
             case UART_BREAK:
                 discard_uart_input();
-                return RS485_TRANSFER_BREAK_ERROR;
+                return recover_and_return(RS485_TRANSFER_BREAK_ERROR);
 
             case UART_FIFO_OVF:
             case UART_BUFFER_FULL:
                 discard_uart_input();
-                return RS485_TRANSFER_OVERFLOW;
+                return recover_and_return(RS485_TRANSFER_OVERFLOW);
 
             default:
                 ESP_LOGD(TAG, "Evento UART ignorado: %d", (int)event.type);
@@ -295,6 +348,11 @@ rs485_transfer_status_t rs485_master_transceive(
     }
 
     return RS485_TRANSFER_TIMEOUT;
+}
+
+uint32_t rs485_master_get_recovery_count(void)
+{
+    return s_recovery_count;
 }
 
 const char *rs485_transfer_status_to_string(rs485_transfer_status_t status)

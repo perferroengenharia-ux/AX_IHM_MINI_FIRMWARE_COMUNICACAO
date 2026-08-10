@@ -52,6 +52,7 @@ static void set_sync_error(app_comm_result_status_t error);
 static void request_e08_recovery(void)
 {
     bool start_new_recovery = false;
+    bool synchronization_required;
 
     portENTER_CRITICAL(&s_app_lock);
     if (!s_e08_recovery_requested)
@@ -63,8 +64,16 @@ static void request_e08_recovery(void)
     portEXIT_CRITICAL(&s_app_lock);
 
     ihm_command_service_set_e08_active(true);
-    if (start_new_recovery)
+    synchronization_required = start_new_recovery ||
+                               ihm_command_service_is_handshake_complete();
+    if (synchronization_required)
     {
+        /*
+         * Uma sincronizacao pode terminar durante uma janela curta de enlace
+         * e cair novamente antes dos heartbeats que limpam E08. Nesse caso a
+         * recuperacao continua ativa, mas o handshake precisa voltar a
+         * pending para que polling/heartbeat normal nao recomecem em rajada.
+         */
         ihm_command_service_request_sync();
         portENTER_CRITICAL(&s_app_lock);
         s_sync_retry_immediate_requested = true;
@@ -357,7 +366,12 @@ static app_comm_result_t execute_modbus_request(
     comm_diagnostics_record_transaction(link_alive, uptime_ms());
     if (comm_diagnostics_should_activate_e08())
     {
-        ihm_command_service_set_e08_active(true);
+        /*
+         * Interrompe polling/heartbeat normal e passa para o handshake com
+         * backoff. Manter handshake_complete=true neste ponto criava a rajada
+         * permanente observada depois de um UART_BREAK.
+         */
+        request_e08_recovery();
         s_e08_activation_pending = true;
     }
     return result;
@@ -803,7 +817,9 @@ static void communication_task(void *context)
             next_sync_attempt_ms = uptime_ms() + sync_retry_delay_ms;
         }
 
-        if (s_e08_activation_pending)
+        if (s_e08_activation_pending &&
+            ihm_command_service_is_handshake_complete() &&
+            (comm_diagnostics_get_state() != COMM_STATE_OFFLINE))
         {
             (void)perform_write(REG_CONTROL_COMMAND,
                                 REG_CONTROL_ACTIVATE_E08);
@@ -959,7 +975,7 @@ static void communication_task(void *context)
             portEXIT_CRITICAL(&s_app_lock);
             if (comm_diagnostics_should_activate_e08())
             {
-                ihm_command_service_set_e08_active(true);
+                request_e08_recovery();
                 s_e08_activation_pending = true;
             }
             heartbeat_sequence++;

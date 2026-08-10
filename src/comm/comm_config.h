@@ -30,6 +30,8 @@
  * FIFO da UART.
  */
 #define COMM_UART_DE_PRE_DELAY_US          ((uint32_t)1000U)
+/* Pausa entre remover e reinstalar o driver apos break/framing/overflow. */
+#define COMM_UART_RECOVERY_DELAY_US        ((uint32_t)2000U)
 
 #define COMM_RESPONSE_PROCESSING_MARGIN_MS ((uint32_t)50U)
 #define COMM_INTER_FRAME_SILENCE_MS       ((uint32_t)5U)

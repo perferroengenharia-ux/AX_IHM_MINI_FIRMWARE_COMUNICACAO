@@ -11,6 +11,7 @@
 #include "ihm_command_service.h"
 #include "parameter_cache.h"
 #include "protocol/register_map.h"
+#include "rs485_master.h"
 
 #include "esp_console.h"
 #include "esp_log.h"
@@ -27,7 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-MOTOR-1.1.4"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-MOTOR-1.1.5"
 #define PARAMETER_SYNC_WAIT_MS 6000U
 #define E08_RECOVERY_WAIT_MS 12000U
 
@@ -418,12 +419,13 @@ static int command_comm(int argc, char **argv)
                " timeout=%" PRIu32 " crc=%" PRIu32
                " protocol=%" PRIu32 " exception=%" PRIu32
                " failures=%" PRIu32 " retries=%" PRIu32
-               " latency=%" PRIu32 "ms\n",
+               " uart_recover=%" PRIu32 " latency=%" PRIu32 "ms\n",
                comm_diagnostics_state_to_string(diag.state),
                diag.requests_sent, diag.valid_responses,
                diag.response_timeouts, diag.crc_errors,
                diag.protocol_errors, diag.exception_responses,
                diag.consecutive_failures, diag.retries,
+               rs485_master_get_recovery_count(),
                diag.last_latency_ms);
         return 0;
     }
