@@ -64,15 +64,15 @@ static void request_e08_recovery(void)
     portEXIT_CRITICAL(&s_app_lock);
 
     ihm_command_service_set_e08_active(true);
-    synchronization_required = start_new_recovery ||
-                               ihm_command_service_is_handshake_complete();
+    synchronization_required = start_new_recovery;
     if (synchronization_required)
     {
         /*
-         * Uma sincronizacao pode terminar durante uma janela curta de enlace
-         * e cair novamente antes dos heartbeats que limpam E08. Nesse caso a
-         * recuperacao continua ativa, mas o handshake precisa voltar a
-         * pending para que polling/heartbeat normal nao recomecem em rajada.
+         * Cada ativacao de E08 inicia exatamente um handshake. Enquanto a
+         * recuperacao ja esta ativa, observar novamente o bit remoto nao pode
+         * reiniciar a sincronizacao antes dos dois heartbeats de limpeza.
+         * O polling solicita uma nova sincronizacao separadamente se o STM32
+         * informar PARAMETERS_SYNCED=0 apos uma nova queda real do enlace.
          */
         ihm_command_service_request_sync();
         portENTER_CRITICAL(&s_app_lock);

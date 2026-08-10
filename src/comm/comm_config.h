@@ -29,8 +29,20 @@
  * ao final da transmissao; apenas antecipamos a assercao antes de carregar a
  * FIFO da UART.
  */
-#define COMM_UART_DE_PRE_DELAY_US          ((uint32_t)1000U)
-/* Pausa entre remover e reinstalar o driver apos break/framing/overflow. */
+#define COMM_UART_DE_PRE_DELAY_US          ((uint32_t)1500U)
+/*
+ * Depois do ultimo stop bit, aguarda o EL817 de DE//RE liberar o receptor.
+ * O STM32 somente fecha a requisicao apos 5 ms de silencio, portanto esta
+ * janela pode descartar eco/glitch local sem consumir o inicio da resposta.
+ */
+#define COMM_UART_DE_RELEASE_SETTLE_US     ((uint32_t)1500U)
+/*
+ * Parity/framing/break isolado apenas limpa FIFO e fila. Uma reinstalacao
+ * completa fica reservada para erros de linha consecutivos, reduzindo a
+ * rajada "uart: queue free spaces" e o tempo fora de recepcao.
+ */
+#define COMM_UART_LINE_ERROR_REINSTALL_THRESHOLD ((uint8_t)3U)
+/* Pausa entre remover e reinstalar o driver apos erro persistente/overflow. */
 #define COMM_UART_RECOVERY_DELAY_US        ((uint32_t)2000U)
 
 #define COMM_RESPONSE_PROCESSING_MARGIN_MS ((uint32_t)50U)

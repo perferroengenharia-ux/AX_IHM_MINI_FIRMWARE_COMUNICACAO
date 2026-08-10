@@ -23,6 +23,7 @@ static const char *TAG = "rs485";
 static QueueHandle_t s_uart_event_queue;
 static bool s_initialized;
 static uint32_t s_recovery_count;
+static uint8_t s_consecutive_line_errors;
 
 static TickType_t milliseconds_to_ticks_ceil(uint32_t milliseconds)
 {
@@ -135,6 +136,7 @@ static esp_err_t recover_uart_driver(void)
     if (error == ESP_OK)
     {
         s_recovery_count++;
+        s_consecutive_line_errors = 0U;
     }
     return error;
 }
@@ -146,6 +148,34 @@ static rs485_transfer_status_t recover_and_return(
            original_status : RS485_TRANSFER_UART_ERROR;
 }
 
+static rs485_transfer_status_t recover_line_error(
+    rs485_transfer_status_t original_status)
+{
+    /*
+     * PE/FE/BREAK nao inutilizam o driver ESP-IDF. Primeiro devolve a linha
+     * para recepcao e limpa o evento; reinstalar em todo erro ampliava a
+     * indisponibilidade e inundava o terminal com logs internos da UART.
+     */
+    if (uart_set_rts(COMM_UART_PORT, 1) != ESP_OK)
+    {
+        return recover_and_return(RS485_TRANSFER_UART_ERROR);
+    }
+    discard_uart_input();
+
+    if (s_consecutive_line_errors < UINT8_MAX)
+    {
+        s_consecutive_line_errors++;
+    }
+    if (s_consecutive_line_errors <
+        COMM_UART_LINE_ERROR_REINSTALL_THRESHOLD)
+    {
+        return original_status;
+    }
+
+    s_consecutive_line_errors = 0U;
+    return recover_and_return(original_status);
+}
+
 esp_err_t rs485_master_init(void)
 {
     esp_err_t error;
@@ -155,7 +185,10 @@ esp_err_t rs485_master_init(void)
         return ESP_OK;
     }
 
+    /* Mantem avisos/erros da UART e remove o INFO emitido a cada install. */
+    esp_log_level_set("uart", ESP_LOG_WARN);
     s_recovery_count = 0U;
+    s_consecutive_line_errors = 0U;
     error = configure_uart_driver();
     if (error != ESP_OK)
     {
@@ -164,11 +197,12 @@ esp_err_t rs485_master_init(void)
 
     ESP_LOGI(TAG,
              "UART1 RS485 pronta: RX GPIO%d, TX GPIO%d, RTS/DE GPIO%d, "
-             "9600 8E1, pre-DE %" PRIu32 " us",
+             "9600 8E1, pre-DE %" PRIu32 " us, release-DE %" PRIu32 " us",
              COMM_UART_RX_GPIO,
              COMM_UART_TX_GPIO,
              COMM_UART_RTS_GPIO,
-             COMM_UART_DE_PRE_DELAY_US);
+             COMM_UART_DE_PRE_DELAY_US,
+             COMM_UART_DE_RELEASE_SETTLE_US);
     return ESP_OK;
 }
 
@@ -252,6 +286,14 @@ rs485_transfer_status_t rs485_master_transceive(
         return recover_and_return(RS485_TRANSFER_UART_ERROR);
     }
 
+    /*
+     * O opto de DE//RE pode continuar conduzindo depois do comando de
+     * recepcao. Espera sua cauda e remove apenas eco/glitch produzido durante
+     * a troca. O escravo aguarda 5 ms de silencio antes de responder.
+     */
+    esp_rom_delay_us(COMM_UART_DE_RELEASE_SETTLE_US);
+    discard_uart_input();
+
     deadline_us = esp_timer_get_time() + timeout_us;
 
     while (esp_timer_get_time() < deadline_us)
@@ -278,6 +320,7 @@ rs485_transfer_status_t rs485_master_transceive(
             if (received_any_data)
             {
                 *response_length = received_length;
+                s_consecutive_line_errors = 0U;
                 return RS485_TRANSFER_OK;
             }
             continue;
@@ -313,22 +356,20 @@ rs485_transfer_status_t rs485_master_transceive(
                 if (received_any_data && event.timeout_flag)
                 {
                     *response_length = received_length;
+                    s_consecutive_line_errors = 0U;
                     return RS485_TRANSFER_OK;
                 }
                 break;
             }
 
             case UART_PARITY_ERR:
-                discard_uart_input();
-                return recover_and_return(RS485_TRANSFER_PARITY_ERROR);
+                return recover_line_error(RS485_TRANSFER_PARITY_ERROR);
 
             case UART_FRAME_ERR:
-                discard_uart_input();
-                return recover_and_return(RS485_TRANSFER_FRAMING_ERROR);
+                return recover_line_error(RS485_TRANSFER_FRAMING_ERROR);
 
             case UART_BREAK:
-                discard_uart_input();
-                return recover_and_return(RS485_TRANSFER_BREAK_ERROR);
+                return recover_line_error(RS485_TRANSFER_BREAK_ERROR);
 
             case UART_FIFO_OVF:
             case UART_BUFFER_FULL:
@@ -344,6 +385,7 @@ rs485_transfer_status_t rs485_master_transceive(
     if (received_any_data)
     {
         *response_length = received_length;
+        s_consecutive_line_errors = 0U;
         return RS485_TRANSFER_OK;
     }
 
