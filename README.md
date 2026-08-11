@@ -12,7 +12,7 @@ Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-MOTOR`. Ele aceita some
 - parâmetros persistidos em NVS;
 - terminal USB/UART a 115200 bit/s.
 
-Não há aquisição de tensão, corrente ou temperatura. O único erro tratado é E08. MOTOR/PA11 é apenas monitorado e BYPASS/PA15 permanece fixo em high.
+Não há aquisição de tensão, corrente ou temperatura. O único erro tratado é E08. PB11/SD-OD está temporariamente desativado no STM32 e o diagnóstico `ipm_fault` permanece limpo; PA11 e PB12 não são usados, e BYPASS/PA15 permanece fixo em high.
 
 ## Compilar e testar
 

@@ -341,7 +341,7 @@ static int command_version(int argc, char **argv)
     (void)argc;
     (void)argv;
     printf("OK firmware=%s protocol=0x%04X scope=communication-motor-peripherals "
-           "adc=off motor_monitor=input bypass=fixed_high pwm=spwm_3phase\n",
+           "adc=off ipm_fault=disabled bypass=fixed_high pwm=spwm_3phase\n",
            IHM_FIRMWARE_VERSION, REG_PROTOCOL_VERSION_EXPECTED);
     return 0;
 }
@@ -652,7 +652,7 @@ static int command_outputs(int argc, char **argv)
     bits = result.values[0];
     printf("OK pump_requested=%s pump_allowed=%s pump_active=%s "
            "swing_requested=%s swing_allowed=%s swing_active=%s "
-           "pwm=%s motor_monitor=%s bypass=%s\n",
+           "pwm=%s ipm_fault=%s bypass=%s\n",
            (bits & REG_PERIPHERAL_PUMP_REQUEST_MASK) != 0U ? "on" : "off",
            (bits & REG_PERIPHERAL_PUMP_ALLOWED_MASK) != 0U ? "yes" : "no",
            (bits & REG_PERIPHERAL_PUMP_ACTIVE_MASK) != 0U ? "on" : "off",
@@ -660,7 +660,8 @@ static int command_outputs(int argc, char **argv)
            (bits & REG_PERIPHERAL_SWING_ALLOWED_MASK) != 0U ? "yes" : "no",
             (bits & REG_PERIPHERAL_SWING_ACTIVE_MASK) != 0U ? "on" : "off",
             (bits & REG_PERIPHERAL_MOTOR_ACTIVE_MASK) != 0U ? "on" : "off",
-            (bits & REG_PERIPHERAL_MOTOR_PIN_HIGH_MASK) != 0U ? "high" : "low",
+             (bits & REG_PERIPHERAL_IPM_FAULT_ACTIVE_MASK) != 0U ?
+                 "active" : "clear",
             (bits & REG_PERIPHERAL_BYPASS_PIN_HIGH_MASK) != 0U ? "high" : "low");
     return 0;
 }
@@ -733,7 +734,7 @@ static int print_motor_status(bool pwm_only)
     {
         printf("OK pwm=%s timer=%s complementary=%s mode=%s carrier=%uHz "
                "ARR=%u PSC=%u deadtime_ns=%u modulation=%.1f%% "
-               "motor_monitor=%s phase_step=0x%04X%04X\n",
+               "ipm_fault=%s phase_step=0x%04X%04X\n",
                (flags & REG_MOTOR_PWM_MOE_ENABLED) != 0U ? "on" : "off",
                (flags & REG_MOTOR_PWM_TIMER_RUNNING) != 0U ?
                    "running" : "stopped",
@@ -745,15 +746,15 @@ static int print_motor_status(bool pwm_only)
                motor[REG_MOTOR_DEADTIME_NS - REG_MOTOR_STATE],
                (double)motor[REG_MOTOR_MODULATION_PERMILLE -
                              REG_MOTOR_STATE] / 10.0,
-               motor[REG_MOTOR_MONITOR_LEVEL - REG_MOTOR_STATE] != 0U ?
-                   "high" : "low",
+               motor[REG_IPM_FAULT_ACTIVE - REG_MOTOR_STATE] != 0U ?
+                    "active" : "clear",
                motor[REG_MOTOR_PHASE_STEP_HIGH - REG_MOTOR_STATE],
                motor[REG_MOTOR_PHASE_STEP_LOW - REG_MOTOR_STATE]);
         return 0;
     }
     printf("OK motor_state=%s target=%.2fHz actual=%.2fHz direction=%s "
            "system=%s pwm=%s carrier=%uHz modulation=%.1f%% "
-           "motor_monitor=%s blocks=0x%04X[comm=%u params=%u system=%u "
+           "ipm_fault=%s blocks=0x%04X[comm=%u params=%u system=%u "
            "direction=%u target=%u e08=%u safety=%u]\n",
            motor_state_to_string(motor[0]),
            (double)motor[REG_MOTOR_TARGET_FREQUENCY - REG_MOTOR_STATE] / 100.0,
@@ -766,8 +767,8 @@ static int print_motor_status(bool pwm_only)
            motor[REG_MOTOR_CARRIER_HZ - REG_MOTOR_STATE],
            (double)motor[REG_MOTOR_MODULATION_PERMILLE -
                          REG_MOTOR_STATE] / 10.0,
-           motor[REG_MOTOR_MONITOR_LEVEL - REG_MOTOR_STATE] != 0U ?
-               "high" : "low",
+           motor[REG_IPM_FAULT_ACTIVE - REG_MOTOR_STATE] != 0U ?
+                "active" : "clear",
            motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE],
            (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
             REG_MOTOR_BLOCK_COMMUNICATION) != 0U,
