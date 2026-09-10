@@ -906,6 +906,7 @@ static void communication_task(void *context)
             (now_ms >= next_poll_ms))
         {
             app_comm_result_t status_result;
+            app_comm_result_t telemetry_result;
 
             status_result = perform_read(REG_STATUS_WORD, 3U);
             if (status_result.status == APP_COMM_RESULT_OK)
@@ -940,6 +941,22 @@ static void communication_task(void *context)
             else
             {
                 parameter_cache_record_runtime_failure();
+            }
+
+            telemetry_result = perform_read(
+                REG_TELEMETRY_SEQUENCE_BEGIN,
+                REG_TELEMETRY_SNAPSHOT_COUNT);
+            if (telemetry_result.status == APP_COMM_RESULT_OK)
+            {
+                if (!parameter_cache_update_telemetry_snapshot(
+                        telemetry_result.values, uptime_ms()))
+                {
+                    parameter_cache_record_poll_failure();
+                }
+            }
+            else
+            {
+                parameter_cache_record_poll_failure();
             }
             next_poll_ms = uptime_ms() + COMM_PARAMETER_POLL_PERIOD_MS;
         }

@@ -28,7 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-MOTOR-1.1.6"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-SENSORES-1.2.0"
 #define PARAMETER_SYNC_WAIT_MS 6000U
 #define E08_RECOVERY_WAIT_MS 12000U
 
@@ -259,6 +259,22 @@ static const char *peripheral_block_reason_to_string(uint16_t reason)
     }
 }
 
+static const char *inverter_error_to_string(uint16_t error)
+{
+    switch (error)
+    {
+        case REG_ERROR_NONE: return "none";
+        case REG_ERROR_DC_BUS_OVERVOLTAGE: return "dc_bus_overvoltage";
+        case REG_ERROR_DC_BUS_UNDERVOLTAGE: return "dc_bus_undervoltage";
+        case REG_ERROR_IGBT_OVERTEMPERATURE: return "igbt_overtemperature";
+        case REG_ERROR_MOTOR_OVERLOAD: return "motor_overload";
+        case REG_ERROR_HARDWARE_OVERCURRENT: return "hardware_overcurrent";
+        case REG_ERROR_COMMUNICATION: return "communication";
+        case REG_ERROR_MAINS_UNDERVOLTAGE: return "mains_undervoltage";
+        default: return "unknown";
+    }
+}
+
 static bool read_peripheral_block_reason(bool pump, uint16_t *reason)
 {
     app_comm_result_t block;
@@ -340,8 +356,8 @@ static int command_version(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    printf("OK firmware=%s protocol=0x%04X scope=communication-motor-peripherals "
-           "adc=off ipm_fault=disabled bypass=fixed_high pwm=spwm_3phase\n",
+    printf("OK firmware=%s protocol=0x%04X scope=communication-motor-peripherals-sensors "
+           "adc=on opamp=on electrical_faults=on bypass=fault_managed pwm=spwm_3phase\n",
            IHM_FIRMWARE_VERSION, REG_PROTOCOL_VERSION_EXPECTED);
     return 0;
 }
@@ -361,7 +377,8 @@ static int command_status(int argc, char **argv)
     peripheral = cache.runtime_valid ? cache.peripheral_status : 0U;
     printf("OK comm=%s sync=%s handshake=%s e08=%s cache=%s "
            "system=%s motor=%s routine=%s peripheral=0x%04X "
-           "level_valid=%s water=%s shortage=%s "
+           "vbus=%.1fV current=%.2fA temperature=%.1fC "
+           "error=E%02u(%s) faults=0x%04X level_valid=%s water=%s shortage=%s "
            "tx=%" PRIu32 " valid=%" PRIu32 " timeout=%" PRIu32
            " crc=%" PRIu32 "\n",
            comm_diagnostics_state_to_string(diag.state),
@@ -378,6 +395,15 @@ static int command_status(int argc, char **argv)
            (cache.status_word & REG_STATUS_CYCLE_ACTIVE_MASK) != 0U ?
                "active" : "idle",
            peripheral,
+           cache.snapshot_valid ?
+               (double)cache.dc_bus_voltage.converted_value : 0.0,
+           cache.snapshot_valid ?
+               (double)cache.output_current.converted_value : 0.0,
+           cache.snapshot_valid ?
+               (double)cache.igbt_temperature.converted_value : 0.0,
+           cache.current_error,
+           inverter_error_to_string(cache.current_error),
+           cache.snapshot_valid ? cache.active_fault_mask : 0U,
            (peripheral & REG_PERIPHERAL_LEVEL_VALID_MASK) != 0U ?
                "yes" : "no",
            (peripheral & REG_PERIPHERAL_WATER_AVAILABLE_MASK) != 0U ?
@@ -602,36 +628,127 @@ static int command_peripheral(int argc, char **argv)
 
 static int command_sensor(int argc, char **argv)
 {
-    app_comm_result_t mode;
-    app_comm_result_t level;
-    app_comm_result_t status;
+    app_comm_result_t result;
 
-    if ((argc != 2) ||
-        ((strcmp(argv[1], "status") != 0) &&
-         (strcmp(argv[1], "show") != 0)))
+    if ((argc == 2) &&
+        ((strcmp(argv[1], "status") == 0) ||
+         (strcmp(argv[1], "show") == 0)))
     {
-        printf("ERR use=\"sensor status\"\n");
-        return 1;
+        uint16_t *v;
+        uint16_t flags;
+
+        if (!direct_read(REG_TELEMETRY_SEQUENCE_BEGIN,
+                         REG_TELEMETRY_SNAPSHOT_COUNT, &result) ||
+            !result_ok(&result))
+        {
+            return 1;
+        }
+        v = result.values;
+        if (v[REG_TELEMETRY_INDEX_SEQUENCE_BEGIN] !=
+            v[REG_TELEMETRY_INDEX_SEQUENCE_END])
+        {
+            printf("ERR TELEMETRY_SNAPSHOT_CHANGED\n");
+            return 1;
+        }
+        flags = v[REG_TELEMETRY_INDEX_SENSOR_STATUS];
+        printf("OK vbus=%.1fV current=%.2fA temperature=%.1fC "
+               "output_frequency=%.2fHz output_voltage=%.1fV "
+               "current_error=E%02u(%s) last_error=E%02u(%s) "
+               "faults=0x%04X adc=%s opamp_offset=%s simulation=%s "
+               "level_valid=%s water_shortage=%s\n",
+               (double)v[REG_TELEMETRY_INDEX_P02] * REG_P02_SCALE_V,
+               (double)v[REG_TELEMETRY_INDEX_P03] * REG_P03_SCALE_A,
+               (double)v[REG_TELEMETRY_INDEX_P05] * REG_P05_SCALE_C,
+               (double)v[REG_TELEMETRY_INDEX_P01] * REG_P01_SCALE_HZ,
+               (double)v[REG_TELEMETRY_INDEX_P04] * REG_P04_SCALE_V,
+               v[REG_TELEMETRY_INDEX_CURRENT_ERROR],
+               inverter_error_to_string(v[REG_TELEMETRY_INDEX_CURRENT_ERROR]),
+               v[REG_TELEMETRY_INDEX_P06],
+               inverter_error_to_string(v[REG_TELEMETRY_INDEX_P06]),
+               v[REG_TELEMETRY_INDEX_ACTIVE_FAULTS],
+               (flags & REG_SENSOR_ACQUISITION_READY_MASK) != 0U ?
+                   "ready" : "not_ready",
+               (flags & REG_SENSOR_OFFSET_READY_MASK) != 0U ?
+                   "ready" : "not_ready",
+               (flags & REG_SENSOR_SIMULATION_MASK) != 0U ? "on" : "off",
+               (flags & REG_SENSOR_LEVEL_VALID_MASK) != 0U ? "yes" : "no",
+               (flags & REG_SENSOR_WATER_SHORTAGE_MASK) != 0U ? "yes" : "no");
+        return 0;
     }
-    if (!direct_read(REG_P85_LEVEL_SENSOR_MODE, 1U, &mode) ||
-        !result_ok(&mode) ||
-        !direct_read(REG_DIAG_LEVEL_ELECTRICAL, 3U, &level) ||
-        !result_ok(&level) ||
-        !direct_read(REG_PERIPHERAL_STATUS, 1U, &status) ||
-        !result_ok(&status))
+
+    if ((argc == 2) && (strcmp(argv[1], "raw") == 0))
     {
-        return 1;
+        uint16_t *v;
+
+        if (!direct_read(REG_DIAG_ADC_CURRENT_RAW,
+                         REG_SENSOR_DIAGNOSTIC_COUNT, &result) ||
+            !result_ok(&result))
+        {
+            return 1;
+        }
+        v = result.values;
+        printf("OK raw_current=%u raw_vtso=%u raw_vbus=%u offset=%u "
+               "current_adc=%umV vtso=%umV vbus_adc=%umV "
+               "current_inst=%.2fA temperature_inst=%.1fC vbus_inst=%.1fV "
+               "level_electrical=%u level_normal=%u stable_s=%u sim=%u "
+               "limits_vbus=%.1f..%.1fV limit_temperature=%.1fC limit_current=%.2fA\n",
+               v[0], v[1], v[2], v[3], v[4], v[5], v[6],
+               (double)v[7] * 0.01, (double)v[8] * 0.1,
+               (double)v[9] * 0.1, v[10], v[11], v[12], v[13],
+               (double)v[14] * 0.1, (double)v[15] * 0.1,
+               (double)v[16] * 0.1, (double)v[17] * 0.01);
+        return 0;
     }
-    printf("OK sensor=level mode=%u electrical=%u normal=%u stable_s=%u "
-           "valid=%s water=%s shortage=%s\n",
-           mode.values[0], level.values[0], level.values[1], level.values[2],
-           (status.values[0] & REG_PERIPHERAL_LEVEL_VALID_MASK) != 0U ?
-               "yes" : "no",
-           (status.values[0] & REG_PERIPHERAL_WATER_AVAILABLE_MASK) != 0U ?
-               "available" : "unavailable",
-           (status.values[0] & REG_PERIPHERAL_WATER_SHORTAGE_MASK) != 0U ?
-               "yes" : "no");
-    return 0;
+
+    if ((argc == 3) && (strcmp(argv[1], "sim") == 0) &&
+        ((strcmp(argv[2], "enable") == 0) ||
+         (strcmp(argv[2], "disable") == 0)))
+    {
+        const uint16_t command = strcmp(argv[2], "enable") == 0 ?
+            REG_CONTROL_SENSOR_SIM_ENABLE : REG_CONTROL_SENSOR_SIM_DISABLE;
+        if (!direct_control_write(command, &result) || !result_ok(&result))
+        {
+            return 1;
+        }
+        printf("OK sensor_simulation=%s\n", argv[2]);
+        return 0;
+    }
+
+    if ((argc == 5) && (strcmp(argv[1], "sim") == 0) &&
+        (strcmp(argv[2], "set") == 0))
+    {
+        uint16_t address;
+        uint16_t maximum = 4095U;
+        uint16_t raw;
+
+        if (strcmp(argv[3], "current") == 0) { address = REG_TEST_ADC_CURRENT_RAW; }
+        else if (strcmp(argv[3], "temp") == 0) { address = REG_TEST_ADC_VTSO_RAW; }
+        else if (strcmp(argv[3], "vbus") == 0) { address = REG_TEST_ADC_VBUS_RAW; }
+        else if (strcmp(argv[3], "level") == 0)
+        {
+            address = REG_TEST_LEVEL_RAW;
+            maximum = 1U;
+        }
+        else
+        {
+            printf("ERR sensor_sim_target=current|temp|vbus|level\n");
+            return 1;
+        }
+        if (!parse_u16(argv[4], &raw) || (raw > maximum))
+        {
+            printf("ERR raw_range=0..%u\n", maximum);
+            return 1;
+        }
+        if (!direct_write(address, raw, &result) || !result_ok(&result))
+        {
+            return 1;
+        }
+        printf("OK sensor_sim_%s_raw=%u\n", argv[3], raw);
+        return 0;
+    }
+
+    printf("ERR use=\"sensor status|raw|sim enable|disable|sim set current|temp|vbus|level <raw>\"\n");
+    return 1;
 }
 
 static int command_outputs(int argc, char **argv)
@@ -652,7 +769,7 @@ static int command_outputs(int argc, char **argv)
     bits = result.values[0];
     printf("OK pump_requested=%s pump_allowed=%s pump_active=%s "
            "swing_requested=%s swing_allowed=%s swing_active=%s "
-           "pwm=%s ipm_fault=%s bypass=%s\n",
+           "pwm=%s electrical_fault=%s bypass=%s\n",
            (bits & REG_PERIPHERAL_PUMP_REQUEST_MASK) != 0U ? "on" : "off",
            (bits & REG_PERIPHERAL_PUMP_ALLOWED_MASK) != 0U ? "yes" : "no",
            (bits & REG_PERIPHERAL_PUMP_ACTIVE_MASK) != 0U ? "on" : "off",
@@ -660,7 +777,7 @@ static int command_outputs(int argc, char **argv)
            (bits & REG_PERIPHERAL_SWING_ALLOWED_MASK) != 0U ? "yes" : "no",
             (bits & REG_PERIPHERAL_SWING_ACTIVE_MASK) != 0U ? "on" : "off",
             (bits & REG_PERIPHERAL_MOTOR_ACTIVE_MASK) != 0U ? "on" : "off",
-             (bits & REG_PERIPHERAL_IPM_FAULT_ACTIVE_MASK) != 0U ?
+              (bits & REG_PERIPHERAL_ELECTRICAL_FAULT_MASK) != 0U ?
                  "active" : "clear",
             (bits & REG_PERIPHERAL_BYPASS_PIN_HIGH_MASK) != 0U ? "high" : "low");
     return 0;
@@ -755,7 +872,8 @@ static int print_motor_status(bool pwm_only)
     printf("OK motor_state=%s target=%.2fHz actual=%.2fHz direction=%s "
            "system=%s pwm=%s carrier=%uHz modulation=%.1f%% "
            "ipm_fault=%s blocks=0x%04X[comm=%u params=%u system=%u "
-           "direction=%u target=%u e08=%u safety=%u]\n",
+           "direction=%u target=%u e08=%u safety=%u sensors=%u "
+           "electrical=%u latched=%u]\n",
            motor_state_to_string(motor[0]),
            (double)motor[REG_MOTOR_TARGET_FREQUENCY - REG_MOTOR_STATE] / 100.0,
            (double)motor[REG_MOTOR_ACTUAL_FREQUENCY - REG_MOTOR_STATE] / 100.0,
@@ -783,7 +901,13 @@ static int print_motor_status(bool pwm_only)
            (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
             REG_MOTOR_BLOCK_E08) != 0U,
            (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
-            REG_MOTOR_BLOCK_SAFETY) != 0U);
+             REG_MOTOR_BLOCK_SAFETY) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+             REG_MOTOR_BLOCK_SENSOR_NOT_READY) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+             REG_MOTOR_BLOCK_ELECTRICAL_FAULT) != 0U,
+           (motor[REG_MOTOR_START_BLOCKS - REG_MOTOR_STATE] &
+             REG_MOTOR_BLOCK_FAULT_LATCHED) != 0U);
     return 0;
 }
 
@@ -1316,13 +1440,41 @@ static int command_sync(int argc, char **argv)
 
 static int command_error(int argc, char **argv)
 {
+    app_comm_result_t result;
+
     if ((argc == 2) && (strcmp(argv[1], "clear-e08") == 0))
     {
         app_request_e08_recovery();
         printf("OK e08_recovery=requested\n");
         return 0;
     }
-    printf("ERR use=\"error clear-e08\"\n");
+    if ((argc == 2) && (strcmp(argv[1], "status") == 0))
+    {
+        uint16_t *v;
+
+        if (!direct_read(REG_TELEMETRY_CURRENT_ERROR, 3U, &result) ||
+            !result_ok(&result))
+        {
+            return 1;
+        }
+        v = result.values;
+        printf("OK current=E%02u(%s) active_mask=0x%04X "
+               "sensor_flags=0x%04X\n",
+               v[0], inverter_error_to_string(v[0]), v[2], v[1]);
+        return 0;
+    }
+    if ((argc == 2) && (strcmp(argv[1], "reset") == 0))
+    {
+        if (!direct_control_write(REG_CONTROL_FAULT_RESET, &result) ||
+            !result_ok(&result))
+        {
+            printf("ERR fault_reset=blocked check=\"error status; sensor status; motor status\"\n");
+            return 1;
+        }
+        printf("OK fault_reset=completed\n");
+        return 0;
+    }
+    printf("ERR use=\"error status|reset|clear-e08\"\n");
     return 1;
 }
 
@@ -1357,11 +1509,13 @@ static esp_err_t register_all_commands(void)
     REGISTER("param", "param list|get|set|unlock|lock|save|defaults",
              command_param);
     REGISTER("sync", "sync run|status", command_sync);
-    REGISTER("error", "error clear-e08", command_error);
+    REGISTER("error", "error status|reset|clear-e08", command_error);
+    REGISTER("faults", "faults status|reset", command_error);
     REGISTER("bomba", "bomba on|off|status", command_peripheral);
     REGISTER("pump", "pump on|off|status", command_peripheral);
     REGISTER("swing", "swing on|off|status", command_peripheral);
-    REGISTER("sensor", "sensor status", command_sensor);
+    REGISTER("sensor", "sensor status|raw|sim enable|disable|sim set ...",
+             command_sensor);
     REGISTER("outputs", "outputs status", command_outputs);
     REGISTER("system", "system on|off|status", command_system);
     REGISTER("motor", "motor start|stop|status|freq|up|down|dir",

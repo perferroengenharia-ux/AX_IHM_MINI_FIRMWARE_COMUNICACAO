@@ -89,7 +89,7 @@ static void test_crc_and_request_builders(void)
 static void test_response_validation(void)
 {
     uint8_t expected_response[] = {
-        0x01U, 0x03U, 0x02U, 0xC0U, 0x02U, 0x00U, 0x00U};
+        0x01U, 0x03U, 0x02U, 0xC0U, 0x03U, 0x00U, 0x00U};
     uint8_t frame[16];
     modbus_request_t request;
     modbus_response_t response;
@@ -201,7 +201,9 @@ static void test_communication_snapshot_contract(void)
            REG_TELEMETRY_SNAPSHOT_COUNT - 1U));
     CHECK(REG_DIAG_LEVEL_STABLE_SECONDS ==
           (REG_DIAG_LEVEL_ELECTRICAL + 2U));
-    CHECK(REG_PROTOCOL_VERSION_EXPECTED == 0xC002U);
+    CHECK(REG_PROTOCOL_VERSION_EXPECTED == 0xC003U);
+    CHECK(REG_DIAG_P43_LIMIT ==
+          (REG_DIAG_ADC_CURRENT_RAW + REG_SENSOR_DIAGNOSTIC_COUNT - 1U));
 
     CHECK(modbus_master_prepare_read(&request,
                                      REG_TELEMETRY_SEQUENCE_BEGIN,
