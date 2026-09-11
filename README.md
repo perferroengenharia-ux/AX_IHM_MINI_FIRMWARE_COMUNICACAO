@@ -1,6 +1,6 @@
 # AX_IHM_MINI_FIRMWARE_COMUNICACAO
 
-Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-SENSORES-MQTT-1.3.1`. Ele aceita somente STM32 com protocolo `0xC003` e dispositivo `0xF301`.
+Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-SENSORES-MQTT-1.3.2`. Ele aceita somente STM32 com protocolo `0xC003` e dispositivo `0xF301`.
 
 ## Funções
 
@@ -37,9 +37,12 @@ secagem (ou `skip-stage`), alterar frequência, bomba, swing, iniciar/parar a
 rotina de secagem/exaustão, solicitar status/capacidades e sincronizar a lista
 de agendamentos.
 
-Na partida normal, o STM32 liga o motor automaticamente ao concluir P30. Na
-parada normal, ele desacelera primeiro, executa P31/P32 e deixa o sistema
-desligado ao final. Essas sequências são locais e não geram polling adicional.
+Na partida normal, o STM32 liga o motor automaticamente ao concluir P30 e
+mantém a bomba ligada enquanto o sensor permitir. Na parada normal, a bomba é
+desligada imediatamente e o motor permanece ligado durante P31: P32 diferente
+de zero altera o alvo pela rampa; P32 igual a zero mantém a frequência anterior.
+Depois de P31 o motor desacelera e o sistema é desligado. Essas sequências são
+locais e não geram polling adicional.
 
 A tabela `partitions.csv` reserva 3 MB para o aplicativo na flash física de
 8 MB. Esse espaço adicional é necessário para Wi-Fi, TLS, HTTP e MQTT; a NVS

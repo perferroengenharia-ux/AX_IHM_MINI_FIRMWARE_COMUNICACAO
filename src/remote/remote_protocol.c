@@ -1080,21 +1080,9 @@ static bool execute_command(const parsed_command_t *command,
         }
         if (strcmp(command->behavior, "skip-stage") == 0)
         {
-            /* Cancela uma molhagem ainda ativa antes da partida imediata. */
-            if (!execute_write(command, REG_CONTROL_COMMAND,
-                               REG_CONTROL_CYCLE_STOP,
-                               error, error_size, message, message_size))
-            {
-                return false;
-            }
-            if (!execute_write(command, REG_CONTROL_COMMAND,
-                               REG_CONTROL_SYSTEM_ON,
-                               error, error_size, message, message_size))
-            {
-                return false;
-            }
-            control = REG_CONTROL_MOTOR_START;
-            copy_text(message, message_size, "Motor ligado sem molhagem inicial");
+            control = REG_CONTROL_POWER_ON_SKIP;
+            copy_text(message, message_size,
+                      "Motor ligado; estado da bomba preservado");
         }
         else
         {
