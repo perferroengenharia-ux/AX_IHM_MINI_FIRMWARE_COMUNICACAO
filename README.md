@@ -1,6 +1,6 @@
 # AX_IHM_MINI_FIRMWARE_COMUNICACAO
 
-Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-SENSORES-1.2.0`. Ele aceita somente STM32 com protocolo `0xC003` e dispositivo `0xF301`.
+Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-SENSORES-MQTT-1.3.0`. Ele aceita somente STM32 com protocolo `0xC003` e dispositivo `0xF301`.
 
 ## Funções
 
@@ -13,6 +13,33 @@ Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-SENSORES-1.2.0`. Ele ac
 - rotinas de molhagem, secagem e exaustão executadas no STM32;
 - parâmetros persistidos em NVS;
 - terminal USB/UART a 115200 bit/s.
+- AP local `AXON-IHM-SETUP`, aberto, em `192.168.4.1:8080`;
+- provisionamento de Wi-Fi pelos endpoints usados pelo aplicativo;
+- MQTT TLS com certificado validado e contrato `axon.ihm.v1`;
+- estado de motor, bomba, swing, nível, leituras elétricas e falhas no app;
+- comandos do app encaminhados pela fila Modbus validada, sem acesso paralelo à UART.
+
+## Aplicativo, AP e MQTT
+
+Na primeira configuração, conecte o telefone ao AP `AXON-IHM-SETUP` e use o
+provisionamento do aplicativo. O firmware mantém o AP ativo também durante a
+conexão STA, então a API local continua disponível em
+`http://192.168.4.1:8080/api/v1`.
+
+O MQTT usa os tópicos `axon/ihm/<deviceId>/status`, `state`, `capabilities`,
+`commands`, `events`, `errors` e `schedules`. Status, estado, capacidades e
+agendamentos são retidos; comandos e confirmações não são. O firmware publica
+um snapshot operacional a cada 5 s e o snapshot completo a cada 60 s. As
+consultas HTTP leem somente o cache existente e não acrescentam tráfego RS485.
+
+Comandos aceitos pelo app: ligar/desligar com as etapas normais de molhagem e
+secagem (ou `skip-stage`), alterar frequência, bomba, swing, iniciar/parar a
+rotina de secagem/exaustão, solicitar status/capacidades e sincronizar a lista
+de agendamentos.
+
+A tabela `partitions.csv` reserva 3 MB para o aplicativo na flash física de
+8 MB. Esse espaço adicional é necessário para Wi-Fi, TLS, HTTP e MQTT; a NVS
+continua separada para preservar parâmetros, credenciais e agendamentos.
 
 O STM32 mede barramento, corrente e temperatura, protege por E02–E06 e mantém E08 para comunicação. PA11/SD-OD usa TIM1_BKIN2; PB11 e PB12 não são usados. O BYPASS/PA15 permanece alto sem falha e é desligado por falha elétrica ativa.
 

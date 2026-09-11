@@ -24,3 +24,8 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
 # junto com a console principal em menuconfig.
 CONFIG_IHM_TERMINAL_ENABLE=y
 CONFIG_IHM_TERMINAL_USB_SERIAL_JTAG=y
+
+# MQTT TLS usa a lista de CAs publica do ESP-IDF. Nao desabilitar a
+# verificacao do certificado do broker.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y

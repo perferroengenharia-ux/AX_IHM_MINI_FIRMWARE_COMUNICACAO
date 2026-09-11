@@ -12,6 +12,8 @@ idf_component_register(
         "services/ihm_command_service.c"
         "diagnostics/comm_diagnostics.c"
         "console/console.c"
+        "remote/remote_protocol.c"
+        "remote/remote_network.c"
     INCLUDE_DIRS
         "."
         "app"
@@ -21,9 +23,17 @@ idf_component_register(
         "services"
         "diagnostics"
         "console"
+        "remote"
     REQUIRES
         esp_driver_uart
         esp_timer
         console
         nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_server
+        mqtt
+        json
+        mbedtls
 )
