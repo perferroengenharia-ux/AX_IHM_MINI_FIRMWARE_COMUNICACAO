@@ -11,7 +11,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define REMOTE_FIRMWARE_VERSION "COMUNICACAO-SENSORES-MQTT-1.3.0"
+#define REMOTE_FIRMWARE_VERSION "COMUNICACAO-SENSORES-MQTT-1.3.1"
 #define REMOTE_PROTOCOL_SCHEMA  "axon.ihm.v1"
 
 typedef enum

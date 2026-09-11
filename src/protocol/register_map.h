@@ -143,6 +143,8 @@ typedef enum
 #define REG_CONTROL_WET_START               ((uint16_t)0x0050U)
 #define REG_CONTROL_DRY_START               ((uint16_t)0x0051U)
 #define REG_CONTROL_CYCLE_STOP              ((uint16_t)0x0052U)
+#define REG_CONTROL_POWER_ON_NORMAL         ((uint16_t)0x0053U)
+#define REG_CONTROL_POWER_OFF_NORMAL        ((uint16_t)0x0054U)
 #define REG_STATUS_COMM_READY_MASK         ((uint16_t)0x0001U)
 #define REG_STATUS_PARAMETERS_SYNCED_MASK  ((uint16_t)0x0002U)
 #define REG_STATUS_WRITE_UNLOCKED_MASK     ((uint16_t)0x0004U)

@@ -1080,6 +1080,13 @@ static bool execute_command(const parsed_command_t *command,
         }
         if (strcmp(command->behavior, "skip-stage") == 0)
         {
+            /* Cancela uma molhagem ainda ativa antes da partida imediata. */
+            if (!execute_write(command, REG_CONTROL_COMMAND,
+                               REG_CONTROL_CYCLE_STOP,
+                               error, error_size, message, message_size))
+            {
+                return false;
+            }
             if (!execute_write(command, REG_CONTROL_COMMAND,
                                REG_CONTROL_SYSTEM_ON,
                                error, error_size, message, message_size))
@@ -1091,8 +1098,9 @@ static bool execute_command(const parsed_command_t *command,
         }
         else
         {
-            control = REG_CONTROL_WET_START;
-            copy_text(message, message_size, "Rotina de molhagem iniciada");
+            control = REG_CONTROL_POWER_ON_NORMAL;
+            copy_text(message, message_size,
+                      "Molhagem iniciada; motor ligara ao concluir");
         }
     }
     else if (strcmp(command->type, "power-off") == 0)
@@ -1104,11 +1112,24 @@ static bool execute_command(const parsed_command_t *command,
             copy_text(message, message_size, "Modo de parada invalido");
             return false;
         }
-        control = strcmp(command->behavior, "skip-stage") == 0 ?
-                  REG_CONTROL_SYSTEM_OFF : REG_CONTROL_DRY_START;
-        copy_text(message, message_size,
-                  strcmp(command->behavior, "skip-stage") == 0 ?
-                  "Sistema desligado" : "Rotina de secagem iniciada");
+        if (strcmp(command->behavior, "skip-stage") == 0)
+        {
+            /* Interrompe uma secagem em curso e solicita a parada em rampa. */
+            if (!execute_write(command, REG_CONTROL_COMMAND,
+                               REG_CONTROL_CYCLE_STOP,
+                               error, error_size, message, message_size))
+            {
+                return false;
+            }
+            control = REG_CONTROL_SYSTEM_OFF;
+            copy_text(message, message_size, "Sistema desligando em rampa");
+        }
+        else
+        {
+            control = REG_CONTROL_POWER_OFF_NORMAL;
+            copy_text(message, message_size,
+                      "Parada, secagem e desligamento iniciados");
+        }
     }
     else if (strcmp(command->type, "set-frequency") == 0)
     {
