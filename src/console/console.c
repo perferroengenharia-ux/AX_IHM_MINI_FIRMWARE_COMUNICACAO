@@ -679,10 +679,17 @@ static int command_sensor(int argc, char **argv)
     if ((argc == 2) && (strcmp(argv[1], "raw") == 0))
     {
         uint16_t *v;
+        app_comm_result_t acquisition;
 
         if (!direct_read(REG_DIAG_ADC_CURRENT_RAW,
                          REG_SENSOR_DIAGNOSTIC_COUNT, &result) ||
             !result_ok(&result))
+        {
+            return 1;
+        }
+        if (!direct_read(REG_DIAG_CURRENT_PWM_SAMPLES,
+                         REG_CURRENT_ACQUISITION_DIAGNOSTIC_COUNT,
+                         &acquisition) || !result_ok(&acquisition))
         {
             return 1;
         }
@@ -691,12 +698,20 @@ static int command_sensor(int argc, char **argv)
                "current_adc=%umV vtso=%umV vbus_adc=%umV "
                "current_inst=%.2fA temperature_inst=%.1fC vbus_inst=%.1fV "
                "level_electrical=%u level_normal=%u stable_s=%u sim=%u "
-               "limits_vbus=%.1f..%.1fV limit_temperature=%.1fC limit_current=%.2fA\n",
+               "limits_vbus=%.1f..%.1fV limit_temperature=%.1fC limit_current=%.2fA "
+               "pwm_samples=%u rms_windows=%u failed=%u window_samples=%u "
+               "window_pairs=%u acquisition=0x%04X[pwm=%u injected=%u current_valid=%u]\n",
                v[0], v[1], v[2], v[3], v[4], v[5], v[6],
                (double)v[7] * 0.01, (double)v[8] * 0.1,
                (double)v[9] * 0.1, v[10], v[11], v[12], v[13],
                (double)v[14] * 0.1, (double)v[15] * 0.1,
-               (double)v[16] * 0.1, (double)v[17] * 0.01);
+               (double)v[16] * 0.1, (double)v[17] * 0.01,
+               acquisition.values[0], acquisition.values[1],
+               acquisition.values[2], acquisition.values[3],
+               acquisition.values[4], acquisition.values[5],
+               (acquisition.values[5] & 0x0001U) != 0U,
+               (acquisition.values[5] & 0x0002U) != 0U,
+               (acquisition.values[5] & 0x0004U) != 0U);
         return 0;
     }
 
