@@ -1,6 +1,12 @@
 # AX_IHM_MINI_FIRMWARE_COMUNICACAO
 
-Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-SENSORES-MQTT-1.3.2`. Ele aceita somente STM32 com protocolo `0xC003` e dispositivo `0xF301`.
+Firmware ESP32-S3 mestre Modbus da variante `COMUNICACAO-SENSORES-MQTT-1.3.3`. Ele aceita somente STM32 com protocolo `0xC003` e dispositivo `0xF301`.
+
+A versao 1.3.3 preserva o transporte e o mapa Modbus validados e acrescenta
+somente extensoes opcionais para a area de assistencia tecnica do aplicativo:
+telemetria eletrica, diagnostico IHM-MI, snapshot P10..P91 e os comandos MQTT
+`request-parameters`/`set-parameter`. A escrita remota passa pelo mesmo servico,
+validacao, NVS e handshake usados por `param set` no terminal.
 
 ## Funções
 

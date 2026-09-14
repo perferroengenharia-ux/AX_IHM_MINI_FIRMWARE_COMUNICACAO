@@ -308,6 +308,8 @@ static cJSON *create_state_object(const parameter_cache_snapshot_t *cache,
     cJSON *sensors;
     cJSON *outputs;
     cJSON *communication;
+    cJSON *parameter_values;
+    uint16_t parameter_index;
 
     if (object == NULL)
     {
@@ -411,6 +413,22 @@ static cJSON *create_state_object(const parameter_cache_snapshot_t *cache,
     cJSON_AddNumberToObject(communication, "timeouts", comm->response_timeouts);
     cJSON_AddNumberToObject(communication, "crcErrors", comm->crc_errors);
     cJSON_AddNumberToObject(communication, "protocolErrors", comm->protocol_errors);
+
+    /*
+     * Snapshot somente-leitura dos parametros persistidos na IHM. Os valores
+     * permanecem na unidade bruta do contrato Modbus (por exemplo, P20 em
+     * centesimos de hertz). Aplicativos antigos ignoram este campo opcional.
+     */
+    parameter_values = cJSON_AddObjectToObject(object, "parameters");
+    for (parameter_index = 0U;
+         parameter_index < (uint16_t)IHM_PARAM_COUNT;
+         parameter_index++)
+    {
+        cJSON_AddNumberToObject(
+            parameter_values,
+            ihm_parameters_code((ihm_parameter_id_t)parameter_index),
+            parameters->values[parameter_index]);
+    }
     return object;
 }
 
@@ -1013,7 +1031,8 @@ static bool execute_command(const parsed_command_t *command,
     uint16_t control = 0U;
 
     if ((strcmp(command->type, "request-status") == 0) ||
-        (strcmp(command->type, "request-capabilities") == 0))
+        (strcmp(command->type, "request-capabilities") == 0) ||
+        (strcmp(command->type, "request-parameters") == 0))
     {
         copy_text(message, message_size, "Snapshot solicitado");
         return true;
@@ -1151,6 +1170,72 @@ static bool execute_command(const parsed_command_t *command,
         (void)ihm_command_service_remember_motor_frequency(centihz);
         (void)snprintf(message, message_size, "Frequencia ajustada para %.2f Hz",
                        frequency->valuedouble);
+        return true;
+    }
+    else if (strcmp(command->type, "set-parameter") == 0)
+    {
+        const cJSON *code = cJSON_GetObjectItemCaseSensitive(command->payload,
+                                                              "code");
+        const cJSON *value = cJSON_GetObjectItemCaseSensitive(command->payload,
+                                                               "value");
+        ihm_parameter_id_t parameter_id;
+        ihm_command_status_t parameter_status;
+
+        if (!cJSON_IsString(code) || !cJSON_IsNumber(value) ||
+            !isfinite(value->valuedouble) ||
+            (value->valuedouble < 0.0) ||
+            (value->valuedouble > 65535.0) ||
+            (floor(value->valuedouble) != value->valuedouble) ||
+            !ihm_parameters_find(code->valuestring, &parameter_id))
+        {
+            copy_text(error, error_size, "INVALID_PARAMETER");
+            copy_text(message, message_size,
+                      "Codigo ou valor de parametro invalido");
+            return false;
+        }
+
+        /* Usa o mesmo bloqueio e a mesma validacao do comando param set. */
+        if (ihm_command_service_is_edit_unlocked())
+        {
+            copy_text(error, error_size, "PARAMETER_EDIT_BUSY");
+            copy_text(message, message_size,
+                      "Edicao local de parametros em andamento");
+            return false;
+        }
+        if (ihm_command_service_p00(7U) != IHM_COMMAND_OK)
+        {
+            copy_text(error, error_size, "PARAMETER_UNLOCK_FAILED");
+            copy_text(message, message_size,
+                      "Nao foi possivel liberar a edicao de parametros");
+            return false;
+        }
+
+        parameter_status = ihm_command_service_set_parameter(
+            parameter_id, (uint16_t)value->valuedouble);
+        (void)ihm_command_service_p00(7U);
+        if (parameter_status != IHM_COMMAND_OK)
+        {
+            copy_text(error, error_size,
+                      parameter_status == IHM_COMMAND_INVALID_ARGUMENT ?
+                      "PARAMETER_OUT_OF_RANGE" : "PARAMETER_UPDATE_FAILED");
+            (void)snprintf(message, message_size,
+                           "Parametro %s recusado: %s",
+                           code->valuestring,
+                           ihm_command_status_to_string(parameter_status));
+            return false;
+        }
+
+        if ((parameter_id != IHM_PARAM_P91) && !wait_operational())
+        {
+            copy_text(error, error_size, "PARAMETER_SYNC_FAILED");
+            (void)snprintf(message, message_size,
+                           "Parametro %s salvo, mas a sincronizacao com o inversor falhou",
+                           code->valuestring);
+            return false;
+        }
+        (void)snprintf(message, message_size,
+                       "Parametro %s atualizado para %u",
+                       code->valuestring, (unsigned int)value->valuedouble);
         return true;
     }
     else if ((strcmp(command->type, "set-pump") == 0) ||
