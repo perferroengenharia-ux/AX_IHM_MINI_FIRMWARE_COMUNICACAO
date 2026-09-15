@@ -10,8 +10,9 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <time.h>
 
-#define REMOTE_FIRMWARE_VERSION "COMUNICACAO-SENSORES-MQTT-1.3.3"
+#define REMOTE_FIRMWARE_VERSION "COMUNICACAO-SENSORES-MQTT-1.3.4"
 #define REMOTE_PROTOCOL_SCHEMA  "axon.ihm.v1"
 
 typedef enum
@@ -53,5 +54,8 @@ esp_err_t remote_protocol_handle_schedules(const char *json,
 
 /** Verdadeiro para um snapshot de agendamentos publicado pela propria IHM. */
 bool remote_protocol_is_own_schedules_payload(const char *json);
+
+/** Executa, no maximo uma vez por minuto, os horarios salvos na IHM. */
+esp_err_t remote_protocol_process_schedules(time_t now);
 
 #endif /* REMOTE_PROTOCOL_H */

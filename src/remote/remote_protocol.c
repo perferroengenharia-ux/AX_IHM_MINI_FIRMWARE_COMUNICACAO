@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #define REMOTE_DEVICE_ID_MAX          48U
@@ -42,6 +43,8 @@
 #define REMOTE_E08_WAIT_MS            12000U
 #define REMOTE_NVS_NAMESPACE          "remote_access"
 #define REMOTE_NVS_SCHEDULES_KEY      "schedules"
+#define REMOTE_NVS_SCHEDULE_MIN_KEY   "schedule_min"
+#define REMOTE_VALID_TIME_EPOCH       INT64_C(1704067200)
 
 typedef enum
 {
@@ -82,6 +85,7 @@ static SemaphoreHandle_t s_command_lock;
 static portMUX_TYPE s_request_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_next_request_id;
 static char *s_schedules_json;
+static int64_t s_last_schedule_minute = -1;
 
 static void copy_text(char *destination, size_t size, const char *source)
 {
@@ -1411,6 +1415,223 @@ static bool schedules_payload_valid(cJSON *root)
     return true;
 }
 
+static bool parse_hhmm(const char *text, int *hour, int *minute)
+{
+    int parsed_hour;
+    int parsed_minute;
+    char extra;
+
+    if ((text == NULL) || (strlen(text) != 5U) ||
+        (sscanf(text, "%2d:%2d%c", &parsed_hour, &parsed_minute, &extra) != 2) ||
+        (parsed_hour < 0) || (parsed_hour > 23) ||
+        (parsed_minute < 0) || (parsed_minute > 59))
+    {
+        return false;
+    }
+    *hour = parsed_hour;
+    *minute = parsed_minute;
+    return true;
+}
+
+static bool parse_ymd(const char *text, int *year, int *month, int *day)
+{
+    int parsed_year;
+    int parsed_month;
+    int parsed_day;
+    char extra;
+
+    if ((text == NULL) || (strlen(text) != 10U) ||
+        (sscanf(text, "%4d-%2d-%2d%c", &parsed_year, &parsed_month,
+                &parsed_day, &extra) != 3) ||
+        (parsed_year < 2024) || (parsed_year > 2099) ||
+        (parsed_month < 1) || (parsed_month > 12) ||
+        (parsed_day < 1) || (parsed_day > 31))
+    {
+        return false;
+    }
+    *year = parsed_year;
+    *month = parsed_month;
+    *day = parsed_day;
+    return true;
+}
+
+static int64_t days_from_civil(int year, unsigned month, unsigned day)
+{
+    const int adjusted_year = year - (month <= 2U ? 1 : 0);
+    const int era = (adjusted_year >= 0 ? adjusted_year : adjusted_year - 399) / 400;
+    const unsigned year_of_era = (unsigned)(adjusted_year - era * 400);
+    const unsigned month_prime = month > 2U ? month - 3U : month + 9U;
+    const unsigned day_of_year = (153U * month_prime + 2U) / 5U + day - 1U;
+    const unsigned day_of_era =
+        year_of_era * 365U + year_of_era / 4U - year_of_era / 100U + day_of_year;
+    return (int64_t)era * 146097 + (int64_t)day_of_era - 719468;
+}
+
+static bool parse_iso_utc(const char *text, time_t *value)
+{
+    int year;
+    int month;
+    int day;
+    int hour;
+    int minute;
+    int second;
+    int count;
+    int64_t epoch;
+    const char *fraction_end;
+
+    if ((text == NULL) || (value == NULL))
+    {
+        return false;
+    }
+    count = sscanf(text, "%4d-%2d-%2dT%2d:%2d:%2d", &year, &month,
+                   &day, &hour, &minute, &second);
+    fraction_end = strlen(text) >= 20U ? strchr(&text[19], 'Z') : NULL;
+    if ((count != 6) || (fraction_end == NULL) || (fraction_end[1] != '\0') ||
+        ((text[19] != 'Z') && (text[19] != '.')) ||
+        (year < 2024) || (year > 2099) ||
+        (month < 1) || (month > 12) || (day < 1) || (day > 31) ||
+        (hour < 0) || (hour > 23) || (minute < 0) || (minute > 59) ||
+        (second < 0) || (second > 59))
+    {
+        return false;
+    }
+    epoch = days_from_civil(year, (unsigned)month, (unsigned)day) * 86400 +
+            hour * 3600 + minute * 60 + second;
+    if (epoch < REMOTE_VALID_TIME_EPOCH)
+    {
+        return false;
+    }
+    *value = (time_t)epoch;
+    return true;
+}
+
+static void initialize_clock_from_payload(const cJSON *root)
+{
+    const cJSON *timestamp = cJSON_GetObjectItemCaseSensitive(root, "timestamp");
+    time_t received;
+    struct timeval current;
+    struct timeval requested;
+
+    if ((gettimeofday(&current, NULL) == 0) &&
+        ((int64_t)current.tv_sec >= REMOTE_VALID_TIME_EPOCH))
+    {
+        return;
+    }
+    if (!cJSON_IsString(timestamp) ||
+        !parse_iso_utc(timestamp->valuestring, &received))
+    {
+        return;
+    }
+    requested.tv_sec = received;
+    requested.tv_usec = 0;
+    if (settimeofday(&requested, NULL) == 0)
+    {
+        ESP_LOGI(TAG, "Relogio inicializado pelo aplicativo");
+    }
+}
+
+static bool schedule_matches(const cJSON *item, const struct tm *local)
+{
+    const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(item, "enabled");
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(item, "type");
+    const cJSON *time_value = cJSON_GetObjectItemCaseSensitive(item, "time");
+    const cJSON *recurrence = cJSON_GetObjectItemCaseSensitive(item, "recurrence");
+    int hour;
+    int minute;
+
+    if (!cJSON_IsTrue(enabled) || !cJSON_IsString(type) ||
+        ((strcmp(type->valuestring, "power-on") != 0) &&
+         (strcmp(type->valuestring, "power-off") != 0)) ||
+        !cJSON_IsString(time_value) ||
+        !parse_hhmm(time_value->valuestring, &hour, &minute) ||
+        (hour != local->tm_hour) || (minute != local->tm_min) ||
+        !cJSON_IsString(recurrence))
+    {
+        return false;
+    }
+    if (strcmp(recurrence->valuestring, "daily") == 0)
+    {
+        return true;
+    }
+    if (strcmp(recurrence->valuestring, "weekly") == 0)
+    {
+        const cJSON *days = cJSON_GetObjectItemCaseSensitive(item, "daysOfWeek");
+        const cJSON *day_value;
+        cJSON_ArrayForEach(day_value, days)
+        {
+            if (cJSON_IsNumber(day_value) &&
+                (day_value->valueint == local->tm_wday))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+    if (strcmp(recurrence->valuestring, "one-shot") == 0)
+    {
+        const cJSON *date = cJSON_GetObjectItemCaseSensitive(item, "oneShotDate");
+        int year;
+        int month;
+        int day;
+        return cJSON_IsString(date) &&
+               parse_ymd(date->valuestring, &year, &month, &day) &&
+               (year == local->tm_year + 1900) &&
+               (month == local->tm_mon + 1) && (day == local->tm_mday);
+    }
+    return false;
+}
+
+static void save_last_schedule_minute(int64_t minute)
+{
+    nvs_handle_t nvs;
+
+    if (nvs_open(REMOTE_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK)
+    {
+        if (nvs_set_i64(nvs, REMOTE_NVS_SCHEDULE_MIN_KEY, minute) == ESP_OK)
+        {
+            (void)nvs_commit(nvs);
+        }
+        nvs_close(nvs);
+    }
+}
+
+static bool execute_scheduled_command(const cJSON *item, int64_t minute,
+                                      int index)
+{
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(item, "type");
+    parsed_command_t command = {0};
+    char error[48] = {0};
+    char message[REMOTE_EVENT_TEXT_MAX + 1U] = {0};
+    bool applied;
+
+    if (!cJSON_IsString(type) || (s_command_lock == NULL))
+    {
+        return false;
+    }
+    (void)snprintf(command.id, sizeof(command.id), "schedule-%" PRId64 "-%d",
+                   minute, index);
+    copy_text(command.type, sizeof(command.type), type->valuestring);
+    command.behavior = "normal";
+    if (xSemaphoreTake(s_command_lock,
+                       pdMS_TO_TICKS(REMOTE_E08_WAIT_MS +
+                                     REMOTE_SYNC_WAIT_MS +
+                                     REMOTE_COMMAND_WAIT_MS)) != pdTRUE)
+    {
+        return false;
+    }
+    set_command_runtime(&command, REMOTE_COMMAND_SENDING, NULL,
+                        "Executando agendamento");
+    applied = execute_command(&command, error, sizeof(error), message,
+                              sizeof(message));
+    set_command_runtime(&command,
+                        applied ? REMOTE_COMMAND_APPLIED : REMOTE_COMMAND_FAILED,
+                        applied ? NULL : error, message);
+    (void)xSemaphoreGive(s_command_lock);
+    ESP_LOGI(TAG, "Agendamento %s: %s", command.type,
+             applied ? "aplicado" : error);
+    return applied;
+}
+
 bool remote_protocol_is_own_schedules_payload(const char *json)
 {
     bool own = false;
@@ -1452,14 +1673,25 @@ esp_err_t remote_protocol_handle_schedules(const char *json,
         cJSON_Delete(root);
         return ESP_ERR_INVALID_ARG;
     }
+    initialize_clock_from_payload(root);
     canonical = create_metadata();
     schedules = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(root, "schedules"), true);
     revision = cJSON_GetObjectItemCaseSensitive(root, "revision");
     cJSON_AddItemToObject(canonical, "schedules", schedules);
     cJSON_AddStringToObject(canonical, "revision",
                             cJSON_IsString(revision) ? revision->valuestring : "1");
-    cJSON_AddStringToObject(canonical, "timezone", "America/Sao_Paulo");
-    cJSON_AddNumberToObject(canonical, "timezoneOffsetMinutes", -180);
+    {
+        const cJSON *timezone = cJSON_GetObjectItemCaseSensitive(root, "timezone");
+        const cJSON *offset = cJSON_GetObjectItemCaseSensitive(
+            root, "timezoneOffsetMinutes");
+        cJSON_AddStringToObject(canonical, "timezone",
+                                cJSON_IsString(timezone) ? timezone->valuestring :
+                                                         "America/Sao_Paulo");
+        cJSON_AddNumberToObject(canonical, "timezoneOffsetMinutes",
+                                cJSON_IsNumber(offset) &&
+                                (offset->valueint >= -720) &&
+                                (offset->valueint <= 840) ? offset->valueint : -180);
+    }
     serialized = finish_json(canonical);
     cJSON_Delete(root);
     if ((serialized == NULL) || (strlen(serialized) > REMOTE_SCHEDULES_MAX_JSON))
@@ -1493,6 +1725,84 @@ esp_err_t remote_protocol_handle_schedules(const char *json,
     ESP_LOGI(TAG, "Agendamentos sincronizados para %s em %s",
              device_id, timestamp);
     return *response_json != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+esp_err_t remote_protocol_process_schedules(time_t now)
+{
+    char *json = NULL;
+    cJSON *root;
+    const cJSON *schedules;
+    const cJSON *offset_value;
+    const cJSON *item;
+    struct tm local = {0};
+    time_t local_epoch;
+    int offset = -180;
+    int index = 0;
+    int64_t minute;
+    bool matched = false;
+
+    if ((int64_t)now < REMOTE_VALID_TIME_EPOCH)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    minute = (int64_t)now / 60;
+    if (minute == s_last_schedule_minute)
+    {
+        return ESP_OK;
+    }
+    (void)xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_schedules_json != NULL)
+    {
+        json = strdup(s_schedules_json);
+    }
+    (void)xSemaphoreGive(s_lock);
+    s_last_schedule_minute = minute;
+    if (json == NULL)
+    {
+        return ESP_OK;
+    }
+    root = cJSON_Parse(json);
+    free(json);
+    if (root == NULL)
+    {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    offset_value = cJSON_GetObjectItemCaseSensitive(root, "timezoneOffsetMinutes");
+    if (cJSON_IsNumber(offset_value) && (offset_value->valueint >= -720) &&
+        (offset_value->valueint <= 840))
+    {
+        offset = offset_value->valueint;
+    }
+    local_epoch = now + (time_t)offset * 60;
+    (void)gmtime_r(&local_epoch, &local);
+    schedules = cJSON_GetObjectItemCaseSensitive(root, "schedules");
+    cJSON_ArrayForEach(item, schedules)
+    {
+        if (schedule_matches(item, &local))
+        {
+            matched = true;
+            (void)execute_scheduled_command(item, minute, index);
+        }
+        index++;
+    }
+    if (matched)
+    {
+        save_last_schedule_minute(minute);
+    }
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+static void load_last_schedule_minute(void)
+{
+    nvs_handle_t nvs;
+
+    if (nvs_open(REMOTE_NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK)
+    {
+        (void)nvs_get_i64(nvs, REMOTE_NVS_SCHEDULE_MIN_KEY,
+                          &s_last_schedule_minute);
+        nvs_close(nvs);
+    }
 }
 
 static void load_schedules(void)
@@ -1543,5 +1853,6 @@ esp_err_t remote_protocol_init(void)
               "MQTT e API local inicializados");
     s_runtime.event_sequence = esp_random();
     load_schedules();
+    load_last_schedule_minute();
     return ESP_OK;
 }

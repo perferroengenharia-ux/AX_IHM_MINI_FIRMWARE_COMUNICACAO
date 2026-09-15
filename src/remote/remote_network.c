@@ -688,6 +688,18 @@ static void publisher_task(void *argument)
     }
 }
 
+static void schedule_task(void *argument)
+{
+    TickType_t last_wake = xTaskGetTickCount();
+
+    (void)argument;
+    for (;;)
+    {
+        (void)remote_protocol_process_schedules(time(NULL));
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1000U));
+    }
+}
+
 static void set_json_headers(httpd_req_t *request)
 {
     httpd_resp_set_type(request, "application/json");
@@ -1132,6 +1144,12 @@ esp_err_t remote_network_start(void)
         return ESP_ERR_NO_MEM;
     }
     task_result = xTaskCreate(publisher_task, "app_publisher", 6144U,
+                              NULL, 3U, NULL);
+    if (task_result != pdPASS)
+    {
+        return ESP_ERR_NO_MEM;
+    }
+    task_result = xTaskCreate(schedule_task, "app_schedules", 6144U,
                               NULL, 3U, NULL);
     if (task_result != pdPASS)
     {
