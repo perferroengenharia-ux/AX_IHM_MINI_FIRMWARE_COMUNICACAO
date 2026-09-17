@@ -55,6 +55,8 @@
 #define COMM_PARAMETER_POLL_PERIOD_MS     ((uint32_t)500U)
 #define COMM_HEARTBEAT_PERIOD_MS          ((uint32_t)1000U)
 #define COMM_E08_RECOVERY_HEARTBEATS      ((uint8_t)2U)
+#define COMM_FAULT_RESET_STABLE_MS        ((uint32_t)1000U)
+#define COMM_FAULT_RESET_RETRY_MS         ((uint32_t)5000U)
 #define COMM_CACHE_FRESHNESS_MS           ((uint32_t)1500U)
 
 #define COMM_COMMAND_QUEUE_LENGTH         8U

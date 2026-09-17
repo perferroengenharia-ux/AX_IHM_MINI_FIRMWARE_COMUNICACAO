@@ -28,7 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-SENSORES-1.2.2"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-SENSORES-1.2.3"
 #define PARAMETER_SYNC_WAIT_MS 6000U
 #define E08_RECOVERY_WAIT_MS 12000U
 
@@ -1493,6 +1493,30 @@ static int command_error(int argc, char **argv)
     return 1;
 }
 
+static int command_ipm(int argc, char **argv)
+{
+    app_comm_result_t pin_result;
+    app_comm_result_t counters_result;
+
+    if ((argc != 2) || (strcmp(argv[1], "status") != 0))
+    {
+        printf("ERR use=\"ipm status\"\n");
+        return 1;
+    }
+    if (!direct_read(REG_IPM_FAULT_ACTIVE, 1U, &pin_result) ||
+        !result_ok(&pin_result) ||
+        !direct_read(REG_DIAG_IPM_BREAK_EVENTS, 3U, &counters_result) ||
+        !result_ok(&counters_result))
+    {
+        return 1;
+    }
+    printf("OK sd_od=%s break_events=%u confirmed_e06=%u transient_noise=%u\n",
+           pin_result.values[0] != 0U ? "fault_low" : "clear_high",
+           counters_result.values[0], counters_result.values[1],
+           counters_result.values[2]);
+    return 0;
+}
+
 static esp_err_t register_command(const char *name,
                                   const char *help,
                                   esp_console_cmd_func_t function)
@@ -1526,6 +1550,7 @@ static esp_err_t register_all_commands(void)
     REGISTER("sync", "sync run|status", command_sync);
     REGISTER("error", "error status|reset|clear-e08", command_error);
     REGISTER("faults", "faults status|reset", command_error);
+    REGISTER("ipm", "ipm status", command_ipm);
     REGISTER("bomba", "bomba on|off|status", command_peripheral);
     REGISTER("pump", "pump on|off|status", command_peripheral);
     REGISTER("swing", "swing on|off|status", command_peripheral);

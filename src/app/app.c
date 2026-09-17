@@ -46,6 +46,9 @@ static bool s_e08_activation_pending;
 static bool s_e08_recovery_requested;
 static uint8_t s_e08_recovery_heartbeat_streak;
 static bool s_sync_retry_immediate_requested;
+static bool s_fault_reset_ready;
+static uint64_t s_fault_reset_condition_since_ms;
+static uint64_t s_next_fault_reset_attempt_ms;
 
 static void set_sync_error(app_comm_result_status_t error);
 
@@ -899,6 +902,35 @@ static void communication_task(void *context)
         }
 
         now_ms = uptime_ms();
+        if (s_fault_reset_ready &&
+            (now_ms >= s_next_fault_reset_attempt_ms) &&
+            ihm_command_service_is_handshake_complete() &&
+            !ihm_command_service_is_e08_active() &&
+            (comm_diagnostics_get_state() == COMM_STATE_ONLINE))
+        {
+            const app_comm_result_t reset_result =
+                perform_write(REG_CONTROL_COMMAND, REG_CONTROL_FAULT_RESET);
+
+            if (reset_result.status == APP_COMM_RESULT_OK)
+            {
+                s_fault_reset_ready = false;
+                s_fault_reset_condition_since_ms = 0U;
+                ihm_command_service_request_sync();
+                portENTER_CRITICAL(&s_app_lock);
+                s_sync_retry_immediate_requested = true;
+                portEXIT_CRITICAL(&s_app_lock);
+                ESP_LOGI(TAG,
+                         "Falha remota liberada; ressincronizacao iniciada");
+            }
+            else
+            {
+                /* A causa ainda pode estar ativa; nao inundar a RS485. */
+                s_next_fault_reset_attempt_ms =
+                    now_ms + COMM_FAULT_RESET_RETRY_MS;
+            }
+        }
+
+        now_ms = uptime_ms();
         const bool normal_traffic_enabled =
             ihm_command_service_is_handshake_complete();
         if (normal_traffic_enabled &&
@@ -911,6 +943,12 @@ static void communication_task(void *context)
             status_result = perform_read(REG_STATUS_WORD, 3U);
             if (status_result.status == APP_COMM_RESULT_OK)
             {
+                const uint16_t status_word = status_result.values[0];
+                const uint16_t current_error = status_result.values[1];
+                const bool motor_fault =
+                    (status_word & REG_STATUS_MOTOR_FAULT_MASK) != 0U;
+                bool reset_condition_clear = false;
+
                 (void)parameter_cache_update_runtime_snapshot(
                     status_result.values,
                     uptime_ms());
@@ -935,6 +973,54 @@ static void communication_task(void *context)
                         portENTER_CRITICAL(&s_app_lock);
                         s_sync_retry_immediate_requested = true;
                         portEXIT_CRITICAL(&s_app_lock);
+                    }
+                }
+
+                /*
+                 * Recuperacao sem desligar a alimentacao: nunca religa o
+                 * motor automaticamente. Apenas limpa o latch quando a causa
+                 * fisica sumiu e, em seguida, refaz o handshake de parametros.
+                 */
+                if (motor_fault &&
+                    (current_error == REG_ERROR_HARDWARE_OVERCURRENT))
+                {
+                    const app_comm_result_t ipm_status =
+                        perform_read(REG_IPM_FAULT_ACTIVE, 1U);
+                    reset_condition_clear =
+                        (ipm_status.status == APP_COMM_RESULT_OK) &&
+                        (ipm_status.values[0] == 0U);
+                }
+                else if (motor_fault &&
+                         (current_error == REG_ERROR_NONE))
+                {
+                    /* Falha eletrica ja normalizada ou BREAK transitorio. */
+                    reset_condition_clear = true;
+                }
+
+                if (reset_condition_clear)
+                {
+                    if (s_fault_reset_condition_since_ms == 0U)
+                    {
+                        s_fault_reset_condition_since_ms = uptime_ms();
+                    }
+                    else if ((uptime_ms() -
+                              s_fault_reset_condition_since_ms) >=
+                             COMM_FAULT_RESET_STABLE_MS)
+                    {
+                        s_fault_reset_ready = true;
+                        if (s_next_fault_reset_attempt_ms < uptime_ms())
+                        {
+                            s_next_fault_reset_attempt_ms = uptime_ms();
+                        }
+                    }
+                }
+                else
+                {
+                    s_fault_reset_condition_since_ms = 0U;
+                    if (!motor_fault)
+                    {
+                        s_fault_reset_ready = false;
+                        s_next_fault_reset_attempt_ms = 0U;
                     }
                 }
             }
