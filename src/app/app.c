@@ -933,9 +933,18 @@ static void communication_task(void *context)
         now_ms = uptime_ms();
         const bool normal_traffic_enabled =
             ihm_command_service_is_handshake_complete();
+        /*
+         * O heartbeat sustenta o watchdog E08 do STM32 e tem precedencia
+         * sobre o polling de telemetria. Se venceu durante uma transacao
+         * anterior, adiar o polling por um ciclo evita que repeticoes de
+         * leituras tecnicas criem uma falsa perda de comunicacao.
+         */
+        const bool heartbeat_due =
+            normal_traffic_enabled && (now_ms >= next_heartbeat_ms);
         if (normal_traffic_enabled &&
             app_is_polling_enabled() &&
-            (now_ms >= next_poll_ms))
+            (now_ms >= next_poll_ms) &&
+            !heartbeat_due)
         {
             app_comm_result_t status_result;
             app_comm_result_t telemetry_result;
