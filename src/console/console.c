@@ -1257,7 +1257,7 @@ static void print_parameter_help(void)
            "param unlock | param set <Pxx> <raw> | param lock | "
            "param save | param defaults 101 confirm\"\n");
     printf("ACTIVE motor: P10/P11 ramps_s; P20/P21/P32=0.01Hz; "
-           "P35=0..9%% torque; P41=60Hz fixed; P42=5|10kHz; P51=dir\n");
+           "P35=0..9%% extra (+2%% internal); P41=60Hz fixed; P42=5|10kHz; P51=dir\n");
     printf("ACTIVE routines: P30/P31/P86=minutes; P33=dry_reverse; "
            "P81 swing; P82 pump; P85 level_sensor; P91 comm_tolerance\n");
 }

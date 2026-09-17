@@ -1404,10 +1404,32 @@ static bool schedules_payload_valid(cJSON *root)
         const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(item, "enabled");
         const cJSON *time_value = cJSON_GetObjectItemCaseSensitive(item, "time");
         const cJSON *days = cJSON_GetObjectItemCaseSensitive(item, "daysOfWeek");
+        const cJSON *frequency = cJSON_GetObjectItemCaseSensitive(item, "frequencyHz");
+        const cJSON *pump_action = cJSON_GetObjectItemCaseSensitive(item, "pumpAction");
+        const cJSON *swing_action = cJSON_GetObjectItemCaseSensitive(item, "swingAction");
         if (!cJSON_IsObject(item) || !cJSON_IsString(id) ||
             !cJSON_IsString(type) || !cJSON_IsString(recurrence) ||
             !cJSON_IsBool(enabled) || !cJSON_IsString(time_value) ||
             !cJSON_IsArray(days))
+        {
+            return false;
+        }
+        if ((frequency != NULL) &&
+            (!cJSON_IsNumber(frequency) || !isfinite(frequency->valuedouble) ||
+             (frequency->valuedouble <= 0.0) || (frequency->valuedouble > 60.0)))
+        {
+            return false;
+        }
+        if (((pump_action != NULL) &&
+             (!cJSON_IsString(pump_action) ||
+              ((strcmp(pump_action->valuestring, "unchanged") != 0) &&
+               (strcmp(pump_action->valuestring, "on") != 0) &&
+               (strcmp(pump_action->valuestring, "off") != 0)))) ||
+            ((swing_action != NULL) &&
+             (!cJSON_IsString(swing_action) ||
+              ((strcmp(swing_action->valuestring, "unchanged") != 0) &&
+               (strcmp(swing_action->valuestring, "on") != 0) &&
+               (strcmp(swing_action->valuestring, "off") != 0)))))
         {
             return false;
         }
@@ -1599,10 +1621,14 @@ static bool execute_scheduled_command(const cJSON *item, int64_t minute,
                                       int index)
 {
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(item, "type");
+    const cJSON *frequency = cJSON_GetObjectItemCaseSensitive(item, "frequencyHz");
+    const cJSON *pump_action = cJSON_GetObjectItemCaseSensitive(item, "pumpAction");
+    const cJSON *swing_action = cJSON_GetObjectItemCaseSensitive(item, "swingAction");
     parsed_command_t command = {0};
+    cJSON *payload = NULL;
     char error[48] = {0};
     char message[REMOTE_EVENT_TEXT_MAX + 1U] = {0};
-    bool applied;
+    bool applied = false;
 
     if (!cJSON_IsString(type) || (s_command_lock == NULL))
     {
@@ -1621,13 +1647,71 @@ static bool execute_scheduled_command(const cJSON *item, int64_t minute,
     }
     set_command_runtime(&command, REMOTE_COMMAND_SENDING, NULL,
                         "Executando agendamento");
-    applied = execute_command(&command, error, sizeof(error), message,
-                              sizeof(message));
+
+    payload = cJSON_CreateObject();
+    if (payload == NULL)
+    {
+        copy_text(error, sizeof(error), "NO_MEMORY");
+        copy_text(message, sizeof(message), "Sem memoria para executar o agendamento");
+        goto schedule_done;
+    }
+    command.payload = payload;
+
+    if ((strcmp(type->valuestring, "power-on") == 0) && cJSON_IsNumber(frequency))
+    {
+        copy_text(command.type, sizeof(command.type), "set-frequency");
+        cJSON_AddNumberToObject(payload, "freqTargetHz", frequency->valuedouble);
+        if (!execute_command(&command, error, sizeof(error), message, sizeof(message)))
+        {
+            goto schedule_done;
+        }
+        cJSON_DeleteItemFromObject(payload, "freqTargetHz");
+    }
+
+    copy_text(command.type, sizeof(command.type), type->valuestring);
+    command.behavior = (strcmp(type->valuestring, "power-on") == 0) &&
+                       cJSON_IsString(pump_action) &&
+                       (strcmp(pump_action->valuestring, "off") == 0) ?
+                       "skip-stage" : "normal";
+    if (!execute_command(&command, error, sizeof(error), message, sizeof(message)))
+    {
+        goto schedule_done;
+    }
+
+    if (strcmp(type->valuestring, "power-on") == 0)
+    {
+        const cJSON *actions[2] = {pump_action, swing_action};
+        const char *commands[2] = {"set-pump", "set-swing"};
+        size_t action_index;
+
+        for (action_index = 0U; action_index < 2U; action_index++)
+        {
+            if (!cJSON_IsString(actions[action_index]) ||
+                (strcmp(actions[action_index]->valuestring, "unchanged") == 0))
+            {
+                continue;
+            }
+            copy_text(command.type, sizeof(command.type), commands[action_index]);
+            cJSON_AddBoolToObject(payload, "enabled",
+                                  strcmp(actions[action_index]->valuestring, "on") == 0);
+            if (!execute_command(&command, error, sizeof(error), message, sizeof(message)))
+            {
+                goto schedule_done;
+            }
+            cJSON_DeleteItemFromObject(payload, "enabled");
+        }
+    }
+    applied = true;
+    copy_text(command.type, sizeof(command.type), type->valuestring);
+    copy_text(message, sizeof(message), "Agendamento aplicado");
+
+schedule_done:
     set_command_runtime(&command,
                         applied ? REMOTE_COMMAND_APPLIED : REMOTE_COMMAND_FAILED,
                         applied ? NULL : error, message);
+    cJSON_Delete(payload);
     (void)xSemaphoreGive(s_command_lock);
-    ESP_LOGI(TAG, "Agendamento %s: %s", command.type,
+    ESP_LOGI(TAG, "Agendamento %s: %s", type->valuestring,
              applied ? "aplicado" : error);
     return applied;
 }

@@ -37,7 +37,7 @@
 #define REMOTE_MQTT_USERNAME           "axon-app"
 #define REMOTE_MQTT_PASSWORD           "axon42"
 #define REMOTE_MQTT_TOPIC_PREFIX       "axon/ihm"
-#define REMOTE_MQTT_KEEPALIVE_SECONDS  60U
+#define REMOTE_MQTT_KEEPALIVE_SECONDS  15U
 #define REMOTE_TOPIC_MAX               192U
 #define REMOTE_MQTT_PAYLOAD_MAX        8192U
 #define REMOTE_HTTP_BODY_MAX           8192U
