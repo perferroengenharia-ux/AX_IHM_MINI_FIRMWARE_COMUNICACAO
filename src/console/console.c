@@ -28,7 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IHM_FIRMWARE_VERSION "COMUNICACAO-SENSORES-1.2.4"
+#define IHM_FIRMWARE_VERSION "COMUNICACAO-SENSORES-1.2.7"
 #define PARAMETER_SYNC_WAIT_MS 6000U
 #define E08_RECOVERY_WAIT_MS 12000U
 
@@ -680,6 +680,7 @@ static int command_sensor(int argc, char **argv)
     {
         uint16_t *v;
         app_comm_result_t acquisition;
+        app_comm_result_t startup_peak;
 
         if (!direct_read(REG_DIAG_ADC_CURRENT_RAW,
                          REG_SENSOR_DIAGNOSTIC_COUNT, &result) ||
@@ -693,6 +694,11 @@ static int command_sensor(int argc, char **argv)
         {
             return 1;
         }
+        if (!direct_read(REG_DIAG_STARTUP_PEAK_CURRENT, 1U,
+                         &startup_peak) || !result_ok(&startup_peak))
+        {
+            return 1;
+        }
         v = result.values;
         printf("OK raw_current=%u raw_vtso=%u raw_vbus=%u offset=%u "
                "current_adc=%umV vtso=%umV vbus_adc=%umV "
@@ -700,7 +706,8 @@ static int command_sensor(int argc, char **argv)
                "level_electrical=%u level_normal=%u stable_s=%u sim=%u "
                "limits_vbus=%.1f..%.1fV limit_temperature=%.1fC limit_current=%.2fA "
                "pwm_samples=%u rms_windows=%u failed=%u window_samples=%u "
-               "window_pairs=%u acquisition=0x%04X[pwm=%u injected=%u current_valid=%u]\n",
+               "window_pairs=%u startup_peak=%.2fA "
+               "acquisition=0x%04X[pwm=%u injected=%u current_valid=%u]\n",
                v[0], v[1], v[2], v[3], v[4], v[5], v[6],
                (double)v[7] * 0.01, (double)v[8] * 0.1,
                (double)v[9] * 0.1, v[10], v[11], v[12], v[13],
@@ -708,7 +715,8 @@ static int command_sensor(int argc, char **argv)
                (double)v[16] * 0.1, (double)v[17] * 0.01,
                acquisition.values[0], acquisition.values[1],
                acquisition.values[2], acquisition.values[3],
-               acquisition.values[4], acquisition.values[5],
+               acquisition.values[4], (double)startup_peak.values[0] * 0.01,
+               acquisition.values[5],
                (acquisition.values[5] & 0x0001U) != 0U,
                (acquisition.values[5] & 0x0002U) != 0U,
                (acquisition.values[5] & 0x0004U) != 0U);

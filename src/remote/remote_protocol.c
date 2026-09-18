@@ -240,7 +240,8 @@ static const char *ready_state(const parameter_cache_snapshot_t *cache,
     }
     if ((cache->status_word & REG_STATUS_CYCLE_ACTIVE_MASK) != 0U)
     {
-        return "draining";
+        return (cache->status_word & REG_STATUS_MOTOR_RUNNING_MASK) != 0U ?
+               "drying" : "wetting";
     }
     if ((cache->status_word & REG_STATUS_MOTOR_RUNNING_MASK) != 0U)
     {
@@ -1125,14 +1126,7 @@ static bool execute_command(const parsed_command_t *command,
         }
         if (strcmp(command->behavior, "skip-stage") == 0)
         {
-            /* Interrompe uma secagem em curso e solicita a parada em rampa. */
-            if (!execute_write(command, REG_CONTROL_COMMAND,
-                               REG_CONTROL_CYCLE_STOP,
-                               error, error_size, message, message_size))
-            {
-                return false;
-            }
-            control = REG_CONTROL_SYSTEM_OFF;
+            control = REG_CONTROL_POWER_OFF_SKIP;
             copy_text(message, message_size, "Sistema desligando em rampa");
         }
         else

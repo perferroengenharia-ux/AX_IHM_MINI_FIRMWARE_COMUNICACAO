@@ -49,8 +49,53 @@ static bool s_sync_retry_immediate_requested;
 static bool s_fault_reset_ready;
 static uint64_t s_fault_reset_condition_since_ms;
 static uint64_t s_next_fault_reset_attempt_ms;
+static bool s_run_requested;
+static bool s_restart_after_recovery_armed;
+static bool s_auto_restart_pending;
+static uint64_t s_next_auto_restart_attempt_ms;
 
 static void set_sync_error(app_comm_result_status_t error);
+
+static bool auto_restart_is_enabled(void)
+{
+    ihm_parameter_blob_t parameters;
+
+    ihm_command_service_get_parameters(&parameters);
+    return parameters.values[IHM_PARAM_P44] == 1U;
+}
+
+static void arm_restart_after_recovery(void)
+{
+    const bool enabled = auto_restart_is_enabled();
+
+    portENTER_CRITICAL(&s_app_lock);
+    if (enabled && s_run_requested)
+    {
+        s_restart_after_recovery_armed = true;
+    }
+    portEXIT_CRITICAL(&s_app_lock);
+}
+
+static void finish_fault_recovery(void)
+{
+    const bool enabled = auto_restart_is_enabled();
+
+    portENTER_CRITICAL(&s_app_lock);
+    if (enabled && s_run_requested && s_restart_after_recovery_armed)
+    {
+        s_auto_restart_pending = true;
+        s_next_auto_restart_attempt_ms = 0U;
+    }
+    else
+    {
+        /* P44=0 sempre termina em standby, sem partida posterior latente. */
+        s_run_requested = false;
+        s_auto_restart_pending = false;
+        s_next_auto_restart_attempt_ms = 0U;
+    }
+    s_restart_after_recovery_armed = false;
+    portEXIT_CRITICAL(&s_app_lock);
+}
 
 static void request_e08_recovery(void)
 {
@@ -66,6 +111,7 @@ static void request_e08_recovery(void)
     }
     portEXIT_CRITICAL(&s_app_lock);
 
+    arm_restart_after_recovery();
     ihm_command_service_set_e08_active(true);
     synchronization_required = start_new_recovery;
     if (synchronization_required)
@@ -737,6 +783,34 @@ static void answer_queued_command(const queued_command_t *command)
     {
         result = execute_modbus_request(&command->request);
     }
+
+    if ((result.status == APP_COMM_RESULT_OK) &&
+        (command->request.type == APP_COMM_REQUEST_WRITE_SINGLE) &&
+        (command->request.address == REG_CONTROL_COMMAND))
+    {
+        const uint16_t control = command->request.values[0];
+
+        portENTER_CRITICAL(&s_app_lock);
+        if ((control == REG_CONTROL_MOTOR_START) ||
+            (control == REG_CONTROL_POWER_ON_NORMAL) ||
+            (control == REG_CONTROL_POWER_ON_SKIP))
+        {
+            s_run_requested = true;
+        }
+        else if ((control == REG_CONTROL_MOTOR_STOP) ||
+                 (control == REG_CONTROL_SYSTEM_OFF) ||
+                 (control == REG_CONTROL_DRY_START) ||
+                 (control == REG_CONTROL_CYCLE_STOP) ||
+                 (control == REG_CONTROL_POWER_OFF_NORMAL) ||
+                 (control == REG_CONTROL_POWER_OFF_SKIP))
+        {
+            s_run_requested = false;
+            s_restart_after_recovery_armed = false;
+            s_auto_restart_pending = false;
+            s_next_auto_restart_attempt_ms = 0U;
+        }
+        portEXIT_CRITICAL(&s_app_lock);
+    }
     result.request_id = command->request.request_id;
 
     if (xQueueSend(command->response_queue, &result, 0U) != pdTRUE)
@@ -875,6 +949,7 @@ static void communication_task(void *context)
                 s_e08_recovery_requested = false;
                 s_e08_recovery_heartbeat_streak = 0U;
                 portEXIT_CRITICAL(&s_app_lock);
+                finish_fault_recovery();
                 if (clear_succeeded)
                 {
                     ESP_LOGI(TAG, "E08 remoto recuperado");
@@ -915,6 +990,7 @@ static void communication_task(void *context)
             {
                 s_fault_reset_ready = false;
                 s_fault_reset_condition_since_ms = 0U;
+                finish_fault_recovery();
                 ihm_command_service_request_sync();
                 portENTER_CRITICAL(&s_app_lock);
                 s_sync_retry_immediate_requested = true;
@@ -927,6 +1003,50 @@ static void communication_task(void *context)
                 /* A causa ainda pode estar ativa; nao inundar a RS485. */
                 s_next_fault_reset_attempt_ms =
                     now_ms + COMM_FAULT_RESET_RETRY_MS;
+            }
+        }
+
+        now_ms = uptime_ms();
+        if (s_auto_restart_pending &&
+            (now_ms >= s_next_auto_restart_attempt_ms) &&
+            ihm_command_service_is_handshake_complete() &&
+            !ihm_command_service_is_e08_active() &&
+            (comm_diagnostics_get_state() == COMM_STATE_ONLINE))
+        {
+            const app_comm_result_t status =
+                perform_read(REG_STATUS_WORD, 3U);
+            const bool remote_ready =
+                (status.status == APP_COMM_RESULT_OK) &&
+                ((status.values[0] &
+                  (REG_STATUS_E08_ACTIVE_MASK |
+                   REG_STATUS_MOTOR_FAULT_MASK)) == 0U) &&
+                ((status.values[0] &
+                  REG_STATUS_PARAMETERS_SYNCED_MASK) != 0U) &&
+                (status.values[1] == REG_ERROR_NONE);
+
+            if (remote_ready)
+            {
+                const app_comm_result_t start_result =
+                    perform_write(REG_CONTROL_COMMAND,
+                                  REG_CONTROL_POWER_ON_SKIP);
+
+                if (start_result.status == APP_COMM_RESULT_OK)
+                {
+                    s_auto_restart_pending = false;
+                    s_next_auto_restart_attempt_ms = 0U;
+                    ESP_LOGI(TAG,
+                             "P44=1: climatizador religado apos a falha");
+                }
+                else
+                {
+                    s_next_auto_restart_attempt_ms =
+                        uptime_ms() + COMM_FAULT_RESET_RETRY_MS;
+                }
+            }
+            else
+            {
+                s_next_auto_restart_attempt_ms =
+                    uptime_ms() + COMM_FAULT_RESET_RETRY_MS;
             }
         }
 
@@ -956,7 +1076,27 @@ static void communication_task(void *context)
                 const uint16_t current_error = status_result.values[1];
                 const bool motor_fault =
                     (status_word & REG_STATUS_MOTOR_FAULT_MASK) != 0U;
+                const bool e08_active =
+                    (status_word & REG_STATUS_E08_ACTIVE_MASK) != 0U;
+                const bool equipment_active =
+                    (status_word &
+                     (REG_STATUS_SYSTEM_ENABLED_MASK |
+                      REG_STATUS_MOTOR_RUNNING_MASK |
+                      REG_STATUS_CYCLE_ACTIVE_MASK)) != 0U;
                 bool reset_condition_clear = false;
+
+                if (!motor_fault && !e08_active &&
+                    (current_error == REG_ERROR_NONE) && equipment_active)
+                {
+                    portENTER_CRITICAL(&s_app_lock);
+                    s_run_requested = true;
+                    portEXIT_CRITICAL(&s_app_lock);
+                }
+                if (motor_fault || e08_active ||
+                    (current_error != REG_ERROR_NONE))
+                {
+                    arm_restart_after_recovery();
+                }
 
                 (void)parameter_cache_update_runtime_snapshot(
                     status_result.values,
@@ -967,8 +1107,7 @@ static void communication_task(void *context)
                  * O polling precisa iniciar a recuperacao mesmo que o ESP32
                  * nao tenha observado a transicao OFFLINE localmente.
                  */
-                if ((status_result.values[0] &
-                     REG_STATUS_E08_ACTIVE_MASK) != 0U)
+                if (e08_active)
                 {
                     request_e08_recovery();
                     if (((status_result.values[0] &
@@ -986,9 +1125,9 @@ static void communication_task(void *context)
                 }
 
                 /*
-                 * Recuperacao sem desligar a alimentacao: nunca religa o
-                 * motor automaticamente. Apenas limpa o latch quando a causa
-                 * fisica sumiu e, em seguida, refaz o handshake de parametros.
+                 * Primeiro limpa o latch somente quando a causa fisica sumiu.
+                 * O P44 e aplicado depois da ressincronizacao: 0 permanece em
+                 * standby; 1 restaura a solicitacao de funcionamento.
                  */
                 if (motor_fault &&
                     (current_error == REG_ERROR_HARDWARE_OVERCURRENT))
